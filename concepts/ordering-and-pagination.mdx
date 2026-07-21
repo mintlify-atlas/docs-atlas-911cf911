@@ -1,0 +1,221 @@
+---
+title: "Sorting and Paginating Results with ts-mongo-criteria"
+sidebarTitle: "Ordering & Pagination"
+description: "Use Order.asc(), Order.desc(), and Order.none() to sort results, and pass limit and page to Criteria for automatic skip calculation and Paginate<T> responses."
+---
+
+`ts-mongo-criteria` handles sorting and pagination as first-class concerns inside the `Criteria` object. You describe *how* to order results using the `Order` value object, and you describe *how many* results to return — and from which page — through the `limit` and `offset` parameters on `Criteria`. The `MongoCriteriaConverter` translates all of this into the `sort`, `skip`, and `limit` fields that MongoDB expects, and `MongoRepository.list()` wraps the results in the typed `Paginate<T>` response.
+
+---
+
+## Order API
+
+The `Order` class is a value object with two fields: `orderBy` (the field name) and `orderType` (an `OrderType` wrapping an `OrderTypes` enum value). You never construct it with `new` directly — use one of the four factory methods instead.
+
+### `Order.asc(field)`
+
+Sort by `field` in ascending order (A → Z, 0 → 9, oldest → newest).
+
+```typescript
+import { Order } from "@abejarano/ts-mongodb-criteria"
+
+const order = Order.asc("name")
+// orderBy.value  → "name"
+// orderType.value → "asc"
+// order.hasOrder() → true
+```
+
+Generated MongoDB sort: `{ "name": 1 }`
+
+### `Order.desc(field)`
+
+Sort by `field` in descending order (Z → A, newest → oldest).
+
+```typescript
+const order = Order.desc("createdAt")
+// orderBy.value  → "createdAt"
+// orderType.value → "desc"
+// order.hasOrder() → true
+```
+
+Generated MongoDB sort: `{ "createdAt": -1 }`
+
+### `Order.none()`
+
+No explicit sort. The `MongoCriteriaConverter` falls back to `{ _id: -1 }` (newest-first by insertion order) when `hasOrder()` returns `false`.
+
+```typescript
+const order = Order.none()
+// order.hasOrder() → false
+```
+
+Generated MongoDB sort: `{ "_id": -1 }` *(default fallback)*
+
+### `Order.fromValues(orderBy?, orderType?)`
+
+Dynamic factory — useful when sort parameters come from a request query string.
+
+```typescript
+// From HTTP query: ?orderBy=price&orderType=asc
+const order = Order.fromValues(req.query.orderBy, req.query.orderType)
+// Safely handles undefined → falls back to Order.none()
+```
+
+### Sorting by `id`
+
+When `orderBy.value` is the string `"id"`, the converter automatically maps it to MongoDB's `_id` field:
+
+```typescript
+const order = Order.desc("id")
+// Generated sort: { "_id": -1 }
+```
+
+---
+
+## OrderTypes enum
+
+| Enum member | String value | Description |
+|---|---|---|
+| `OrderTypes.ASC` | `"asc"` | Ascending sort (1 in MongoDB) |
+| `OrderTypes.DESC` | `"desc"` | Descending sort (-1 in MongoDB) |
+| `OrderTypes.NONE` | `"none"` | No explicit sort; converter uses `{ _id: -1 }` |
+
+`OrderType` exposes two convenience predicates:
+
+- `orderType.isNone()` — `true` when value is `"none"`
+- `orderType.isAsc()` — `true` when value is `"asc"`
+
+---
+
+## Pagination
+
+### How it works
+
+The `Criteria` constructor accepts `limit` (page size) and `offset` (1-based page number) as its third and fourth arguments. The constructor computes the MongoDB `skip` value automatically:
+
+```
+skip = (page - 1) * limit
+```
+
+| `limit` | `offset` (page) | Computed `criteria.offset` (skip) |
+|---|---|---|
+| 10 | 1 | 0 |
+| 10 | 2 | 10 |
+| 10 | 3 | 20 |
+| 25 | 4 | 75 |
+| 10 | 0 | 0 (guard: page ≤ 0 → no skip) |
+
+```typescript
+import { Criteria, Filters, Order } from "@abejarano/ts-mongodb-criteria"
+
+const criteria = new Criteria(
+  Filters.none(),
+  Order.desc("createdAt"),
+  25, // limit  — 25 documents per page
+  3   // offset — page 3
+)
+
+console.log(criteria.limit)       // 25
+console.log(criteria.currentPage) // 3   (the raw page number you passed in)
+console.log(criteria.offset)      // 50  (skip = (3 - 1) * 25)
+```
+
+### Omitting pagination
+
+Pass `undefined` (or simply omit the last two arguments) for an un-paginated query. The converter will use `skip: 0` and `limit: 0` (MongoDB treats `limit: 0` as no limit).
+
+```typescript
+const criteria = new Criteria(Filters.none(), Order.asc("name"))
+// criteria.limit   → undefined
+// criteria.offset  → undefined
+```
+
+---
+
+## `Paginate<T>`
+
+`MongoRepository.list()` returns a `Promise<Paginate<T>>` instead of a raw array. The `Paginate<T>` type is defined as:
+
+```typescript
+export type Paginate<T> = {
+  nextPag: string | number | null
+  count:   number
+  results: Array<T>
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `nextPag` | `string \| number \| null` | The next page number, or `null` if the current page is the last one. |
+| `count` | `number` | Total number of documents matching the criteria (before pagination). |
+| `results` | `Array<T>` | The documents for the current page, hydrated to type `T`. |
+
+Use `nextPag` to drive cursor-style "Load more" UIs or to pass `?page=nextPag` in your API responses.
+
+---
+
+## Full paginated and sorted example
+
+```typescript
+import {
+  Criteria,
+  Filters,
+  Order,
+  Operator,
+} from "@abejarano/ts-mongodb-criteria"
+
+// Filters: only active users in the US
+const filters = Filters.fromValues([
+  new Map<string, any>([
+    ["field", "status"],
+    ["operator", Operator.EQUAL],
+    ["value", "active"],
+  ]),
+  new Map<string, any>([
+    ["field", "country"],
+    ["operator", Operator.EQUAL],
+    ["value", "US"],
+  ]),
+])
+
+// Sort newest first, page 2 of 20 results per page
+const criteria = new Criteria(filters, Order.desc("createdAt"), 20, 2)
+
+console.log(criteria.limit)       // 20
+console.log(criteria.currentPage) // 2
+console.log(criteria.offset)      // 20  ← MongoDB skip value
+
+// In your repository:
+// const page = await userRepository.list<UserDTO>(criteria)
+//
+// page.count    → total matching users, e.g. 143
+// page.results  → 20 UserDTO objects for page 2
+// page.nextPag  → 3 (or null if page 2 was the last page)
+
+// Render next-page link:
+// if (page.nextPag !== null) {
+//   console.log(`Next: /users?page=${page.nextPag}&limit=20`)
+// }
+```
+
+---
+
+<Tip>
+**Use date-based filtering instead of high page numbers for large datasets.**
+
+When a collection has millions of documents, a MongoDB `skip` of 50 000+ is expensive — the database must scan and discard all preceding documents before returning results. For infinite-scroll or "load more" UIs, store the `createdAt` (or `_id`) of the last returned document and use a `LT` / `GT` filter on the next request instead of incrementing the page number. This keeps every query an indexed range scan with no skip overhead.
+
+```typescript
+// Instead of page 5000:
+const cursorFilter = new Map<string, any>([
+  ["field", "createdAt"],
+  ["operator", Operator.LT],
+  ["value", lastSeenDate],  // last document's createdAt from previous response
+])
+const criteria = new Criteria(
+  Filters.fromValues([cursorFilter]),
+  Order.desc("createdAt"),
+  20 // no page number needed
+)
+```
+</Tip>

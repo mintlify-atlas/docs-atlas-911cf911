@@ -1,0 +1,187 @@
+---
+title: "Operator Enum — ts-mongo-criteria API Reference"
+sidebarTitle: "Operators"
+description: "The Operator enum defines all 12 filter operators in ts-mongo-criteria with their string values and corresponding MongoDB query operators."
+---
+
+The `Operator` enum is the authoritative list of every comparison and logical operator that `ts-mongo-criteria` understands. When you construct a `FilterOperator` you choose one of these twelve members — the `MongoCriteriaConverter` then maps each member to its MongoDB equivalent when building the final query document.
+
+---
+
+## `Operator` enum reference
+
+| Enum member    | String value   | MongoDB operator       | Required value type           |
+| -------------- | -------------- | ---------------------- | ----------------------------- |
+| `EQUAL`        | `"="`          | `$eq`                  | `FilterPrimitive`             |
+| `NOT_EQUAL`    | `"!="`         | `$ne`                  | `FilterPrimitive`             |
+| `GT`           | `">"`          | `$gt`                  | `FilterPrimitive`             |
+| `GTE`          | `">="`         | `$gte`                 | `FilterPrimitive`             |
+| `LT`           | `"<"`          | `$lt`                  | `FilterPrimitive`             |
+| `LTE`          | `"<="`         | `$lte`                 | `FilterPrimitive`             |
+| `CONTAINS`     | `"CONTAINS"`   | `$regex` (case-insensitive) | `FilterPrimitive` (string) |
+| `NOT_CONTAINS` | `"NOT_CONTAINS"` | `$not` + `$regex`    | `FilterPrimitive` (string)    |
+| `BETWEEN`      | `"BETWEEN"`    | `$gte` + `$lte`        | `BetweenValue`                |
+| `OR`           | `"OR"`         | `$or`                  | `OrCondition[]`               |
+| `IN`           | `"IN"`         | `$in`                  | `FilterPrimitive[]`           |
+| `NOT_IN`       | `"NOT_IN"`     | `$nin`                 | `FilterPrimitive[]`           |
+
+```typescript
+export enum Operator {
+  EQUAL       = "=",
+  NOT_EQUAL   = "!=",
+  GT          = ">",
+  LT          = "<",
+  CONTAINS    = "CONTAINS",
+  NOT_CONTAINS = "NOT_CONTAINS",
+  GTE         = ">=",
+  LTE         = "<=",
+  BETWEEN     = "BETWEEN",
+  OR          = "OR",
+  IN          = "IN",
+  NOT_IN      = "NOT_IN",
+}
+```
+
+---
+
+## `FilterOperator` class
+
+`FilterOperator` wraps a single `Operator` enum member. It is what you pass as the second argument to the `Filter` constructor.
+
+### `constructor(value: Operator)`
+
+Instantiate directly from an enum member when you know the operator at compile time.
+
+```typescript
+import { FilterOperator, Operator } from "@abejarano/ts-mongodb-criteria";
+
+const op = new FilterOperator(Operator.GTE);
+console.log(op.value); // ">"  (the enum string value)
+```
+
+### `static fromValue(value: string): FilterOperator`
+
+Parses a **raw string** into a `FilterOperator`. This is the method `Filter.fromValues()` calls internally, so it is also what runs when you pass operator strings to `Filters.fromValues()`.
+
+```typescript
+import { FilterOperator } from "@abejarano/ts-mongodb-criteria";
+
+const op = FilterOperator.fromValue(">=");
+console.log(op.value); // ">="
+```
+
+<Note>
+  The string you pass must exactly match one of the twelve `Operator` string
+  values listed in the table above (e.g. `"="`, `"BETWEEN"`, `"NOT_IN"`).
+  Matching is case-sensitive.
+</Note>
+
+---
+
+## `InvalidArgumentError`
+
+`FilterOperator.fromValue()` (and `OrderType.fromValue()`) throw an `InvalidArgumentError` when the supplied string does not correspond to any known enum member. Catch it wherever you accept operator strings from untrusted sources such as query parameters.
+
+```typescript
+import { FilterOperator } from "@abejarano/ts-mongodb-criteria";
+
+try {
+  FilterOperator.fromValue("LIKE"); // not a valid Operator
+} catch (err) {
+  // throws InvalidArgumentError: "LIKE" is not a valid Operator value
+  console.error(err.message);
+}
+```
+
+---
+
+## Example — `Operator.BETWEEN` with `BetweenValue`
+
+```typescript
+import {
+  Criteria,
+  Filter,
+  FilterField,
+  FilterOperator,
+  FilterValue,
+  Filters,
+  Operator,
+  Order,
+} from "@abejarano/ts-mongodb-criteria";
+
+// Fetch products priced between $10 and $200
+const priceFilter = new Filter(
+  new FilterField("price"),
+  new FilterOperator(Operator.BETWEEN),
+  new FilterValue({ start: 10, end: 200 })
+);
+
+// Equivalent using date keys
+const dateFilter = new Filter(
+  new FilterField("publishedAt"),
+  new FilterOperator(Operator.BETWEEN),
+  new FilterValue({
+    startDate: new Date("2024-01-01"),
+    endDate:   new Date("2024-06-30"),
+  })
+);
+
+const criteria = new Criteria(
+  new Filters([priceFilter, dateFilter]),
+  Order.asc("price"),
+  50,  // limit
+  1    // page
+);
+```
+
+The converter translates `BETWEEN` into a `$gte` / `$lte` pair:
+
+```json
+{
+  "price":       { "$gte": 10,              "$lte": 200 },
+  "publishedAt": { "$gte": "2024-01-01T…",  "$lte": "2024-06-30T…" }
+}
+```
+
+---
+
+## Example — `Operator.OR` with `OrCondition[]`
+
+```typescript
+import {
+  Criteria,
+  Filter,
+  FilterField,
+  FilterOperator,
+  FilterValue,
+  Filters,
+  Operator,
+  Order,
+} from "@abejarano/ts-mongodb-criteria";
+
+// Match documents where status is "active" OR "pending"
+const orFilter = new Filter(
+  new FilterField("status"),
+  new FilterOperator(Operator.OR),
+  new FilterValue([
+    { field: "status", operator: Operator.EQUAL, value: "active" },
+    { field: "status", operator: Operator.EQUAL, value: "pending" },
+  ])
+);
+
+const criteria = new Criteria(
+  new Filters([orFilter]),
+  Order.desc("updatedAt")
+);
+```
+
+The converter translates the `OR` operator into a MongoDB `$or` array:
+
+```json
+{
+  "$or": [
+    { "status": { "$eq": "active" } },
+    { "status": { "$eq": "pending" } }
+  ]
+}
+```

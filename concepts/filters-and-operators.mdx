@@ -1,0 +1,318 @@
+---
+title: "Filters and Operators: Build MongoDB Queries in TypeScript"
+sidebarTitle: "Filters & Operators"
+description: "Learn all 12 filter operators in ts-mongo-criteria — from EQUAL and BETWEEN to OR and IN — with TypeScript examples and their MongoDB query equivalents."
+---
+
+`ts-mongo-criteria` ships with twelve operators that cover the full range of MongoDB query conditions. Each operator is represented as a value of the `Operator` enum and is applied through a `Filter` built from a plain `Map`. The `MongoCriteriaConverter` translates your `Criteria` into a ready-to-use MongoDB filter object, so your domain layer never touches raw `$eq`, `$gte`, or `$or` syntax.
+
+## Operators reference
+
+| Enum member | String value | MongoDB equivalent | Description |
+|---|---|---|---|
+| `Operator.EQUAL` | `"="` | `{ field: { $eq: value } }` | Exact match |
+| `Operator.NOT_EQUAL` | `"!="` | `{ field: { $ne: value } }` | Excludes matching documents |
+| `Operator.GT` | `">"` | `{ field: { $gt: value } }` | Greater than |
+| `Operator.GTE` | `">="` | `{ field: { $gte: value } }` | Greater than or equal |
+| `Operator.LT` | `"<"` | `{ field: { $lt: value } }` | Less than |
+| `Operator.LTE` | `"<="` | `{ field: { $lte: value } }` | Less than or equal |
+| `Operator.BETWEEN` | `"BETWEEN"` | `{ field: { $gte: start, $lte: end } }` | Inclusive range |
+| `Operator.CONTAINS` | `"CONTAINS"` | `{ field: { $regex: value } }` | Regex substring match |
+| `Operator.NOT_CONTAINS` | `"NOT_CONTAINS"` | `{ field: { $not: { $regex: value } } }` | Negated regex match |
+| `Operator.IN` | `"IN"` | `{ field: { $in: [...] } }` | Matches any value in array |
+| `Operator.NOT_IN` | `"NOT_IN"` | `{ field: { $nin: [...] } }` | Excludes all values in array |
+| `Operator.OR` | `"OR"` | `{ $or: [...] }` | Logical OR across multiple conditions |
+
+---
+
+## Equality operators
+
+### EQUAL
+
+```typescript
+import { Criteria, Filters, Order, Operator } from "@abejarano/ts-mongodb-criteria"
+
+const filter = new Map<string, any>([
+  ["field", "status"],
+  ["operator", Operator.EQUAL],
+  ["value", "active"],
+])
+
+const criteria = new Criteria(Filters.fromValues([filter]), Order.none())
+```
+
+Generated MongoDB filter:
+
+```json
+{ "status": { "$eq": "active" } }
+```
+
+### NOT\_EQUAL
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "role"],
+  ["operator", Operator.NOT_EQUAL],
+  ["value", "banned"],
+])
+
+const criteria = new Criteria(Filters.fromValues([filter]), Order.none())
+```
+
+Generated MongoDB filter:
+
+```json
+{ "role": { "$ne": "banned" } }
+```
+
+---
+
+## Comparison operators
+
+### GT (greater than)
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "age"],
+  ["operator", Operator.GT],
+  ["value", 18],
+])
+```
+
+```json
+{ "age": { "$gt": 18 } }
+```
+
+### GTE (greater than or equal)
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "score"],
+  ["operator", Operator.GTE],
+  ["value", 90],
+])
+```
+
+```json
+{ "score": { "$gte": 90 } }
+```
+
+### LT (less than)
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "price"],
+  ["operator", Operator.LT],
+  ["value", 100],
+])
+```
+
+```json
+{ "price": { "$lt": 100 } }
+```
+
+### LTE (less than or equal)
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "stock"],
+  ["operator", Operator.LTE],
+  ["value", 5],
+])
+```
+
+```json
+{ "stock": { "$lte": 5 } }
+```
+
+---
+
+## Range operator: BETWEEN
+
+The `BETWEEN` operator accepts three different object shapes. All three are normalised internally to a `{ start, end }` pair before being converted to `{ $gte, $lte }`.
+
+<Note>
+The value passed to a `BETWEEN` filter **must** be one of the three recognised shapes below. Passing a primitive or an array will throw an error at converter runtime.
+</Note>
+
+**Shape 1 — `{ start, end }`**
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "age"],
+  ["operator", Operator.BETWEEN],
+  ["value", { start: 18, end: 65 }],
+])
+```
+
+```json
+{ "age": { "$gte": 18, "$lte": 65 } }
+```
+
+**Shape 2 — `{ startDate, endDate }`**
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "createdAt"],
+  ["operator", Operator.BETWEEN],
+  ["value", {
+    startDate: new Date("2024-01-01"),
+    endDate:   new Date("2024-12-31"),
+  }],
+])
+```
+
+```json
+{ "createdAt": { "$gte": "2024-01-01T00:00:00.000Z", "$lte": "2024-12-31T00:00:00.000Z" } }
+```
+
+**Shape 3 — `{ from, to }`**
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "price"],
+  ["operator", Operator.BETWEEN],
+  ["value", { from: 10, to: 50 }],
+])
+```
+
+```json
+{ "price": { "$gte": 10, "$lte": 50 } }
+```
+
+---
+
+## Text operators
+
+### CONTAINS
+
+Uses MongoDB `$regex` for a case-sensitive substring search. Pass a regex-safe string as the value.
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "name"],
+  ["operator", Operator.CONTAINS],
+  ["value", "Smith"],
+])
+```
+
+```json
+{ "name": { "$regex": "Smith" } }
+```
+
+### NOT\_CONTAINS
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "email"],
+  ["operator", Operator.NOT_CONTAINS],
+  ["value", "@spam.com"],
+])
+```
+
+```json
+{ "email": { "$not": { "$regex": "@spam.com" } } }
+```
+
+---
+
+## List operators
+
+### IN
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "country"],
+  ["operator", Operator.IN],
+  ["value", ["US", "CA", "MX"]],
+])
+```
+
+```json
+{ "country": { "$in": ["US", "CA", "MX"] } }
+```
+
+### NOT\_IN
+
+```typescript
+const filter = new Map<string, any>([
+  ["field", "status"],
+  ["operator", Operator.NOT_IN],
+  ["value", ["deleted", "banned"]],
+])
+```
+
+```json
+{ "status": { "$nin": ["deleted", "banned"] } }
+```
+
+---
+
+## Logical operator: OR
+
+The `OR` operator maps across multiple fields or conditions and emits a top-level MongoDB `$or` array. The value must be an array of `OrCondition` objects, each with `field`, `operator`, and `value` keys.
+
+<Warning>
+The `OR` operator requires an `OrCondition[]` array as its value — **not** a primitive, a plain string, or a `BetweenValue`. Passing any other type will throw `"OR operator requires an array of OrCondition objects"` at query-conversion time.
+</Warning>
+
+```typescript
+import { OrCondition } from "@abejarano/ts-mongodb-criteria"
+
+const orConditions: OrCondition[] = [
+  { field: "firstName", operator: Operator.CONTAINS, value: "John" },
+  { field: "lastName",  operator: Operator.CONTAINS, value: "John" },
+  { field: "email",     operator: Operator.CONTAINS, value: "john" },
+]
+
+const filter = new Map<string, any>([
+  ["field", "search"],   // field name is required by the Map shape but ignored for $or
+  ["operator", Operator.OR],
+  ["value", orConditions],
+])
+
+const criteria = new Criteria(Filters.fromValues([filter]), Order.none())
+```
+
+Generated MongoDB filter:
+
+```json
+{
+  "$or": [
+    { "firstName": { "$regex": "John" } },
+    { "lastName":  { "$regex": "John" } },
+    { "email":     { "$regex": "john" } }
+  ]
+}
+```
+
+Supported operators inside an `OrCondition`: `EQUAL`, `NOT_EQUAL`, `GT`, `GTE`, `LT`, `LTE`, `CONTAINS`, `NOT_CONTAINS`.
+
+---
+
+## Combining multiple filters
+
+All filters passed in the same `Filters.fromValues()` call are merged with an implicit **AND** (MongoDB assigns all fields in the same filter document):
+
+```typescript
+const criteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "status"],  ["operator", Operator.EQUAL],   ["value", "active"]]),
+    new Map([["field", "age"],     ["operator", Operator.GTE],     ["value", 18]]),
+    new Map([["field", "country"], ["operator", Operator.IN],      ["value", ["US", "CA"]]]),
+  ]),
+  Order.asc("name"),
+  20, // limit
+  1   // page
+)
+```
+
+Generated MongoDB filter:
+
+```json
+{
+  "status":  { "$eq": "active" },
+  "age":     { "$gte": 18 },
+  "country": { "$in": ["US", "CA"] }
+}
+```

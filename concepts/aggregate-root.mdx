@@ -1,0 +1,302 @@
+---
+title: "AggregateRoot and Value Objects in ts-mongo-criteria"
+sidebarTitle: "Aggregate Root"
+description: "AggregateRoot is the base class for domain entities in ts-mongo-criteria. Implement getId(), toPrimitives(), and fromPrimitives() to integrate with MongoRepository."
+---
+
+`ts-mongo-criteria` is built on a lightweight Domain-Driven Design (DDD) foundation. At the centre of that foundation is the **Aggregate Root** — the single entry point into a cluster of related domain objects. Every entity you want to persist through `MongoRepository` must extend `AggregateRoot`. Alongside it, the library ships a small set of **Value Object** base classes (`ValueObject<T>`, `StringValueObject`, `EnumValueObject<T>`) that let you model typed, self-validating domain values rather than raw primitives.
+
+---
+
+## `AggregateRoot` abstract class
+
+```typescript
+export abstract class AggregateRoot {
+  static fromPrimitives(_data: any): AggregateRoot {
+    throw new Error("fromPrimitives must be implemented in subclasses")
+  }
+  abstract getId(): string | undefined
+  abstract toPrimitives(): any
+}
+
+export type AggregateRootClass<T extends AggregateRoot> = {
+  fromPrimitives(data: any): T
+}
+```
+
+### `getId(): string | undefined`
+
+Return the entity's unique string identifier. `MongoRepository` calls this when upserting a document — the returned value becomes the `_id` field in MongoDB.
+
+```typescript
+getId(): string | undefined {
+  return this.id.value   // e.g. a UUID string
+}
+```
+
+Return `undefined` if your entity does not yet have an ID (e.g. before first save), but be aware that `MongoRepository.upsert()` will rely on this value to match existing documents.
+
+### `toPrimitives(): any`
+
+Serialise the entity into a plain JavaScript object suitable for MongoDB insertion or update. All nested value objects must be unwrapped to their primitive values here.
+
+```typescript
+toPrimitives() {
+  return {
+    _id:       this.id.value,
+    name:      this.name.value,
+    email:     this.email.value,
+    role:      this.role.value,       // enum string
+    createdAt: this.createdAt,        // Date
+  }
+}
+```
+
+### `static fromPrimitives(data: any): AggregateRoot`
+
+Factory method that reconstructs a domain entity from a raw MongoDB document. The base class throws by default — **override it in every subclass**. `MongoRepository` uses the `AggregateRootClass<T>` type (described below) to call this method when hydrating query results.
+
+```typescript
+static fromPrimitives(data: any): User {
+  return new User(
+    new UserId(data._id),
+    new UserName(data.name),
+    new UserEmail(data.email),
+    UserRole.fromValue(data.role),
+    new Date(data.createdAt),
+  )
+}
+```
+
+---
+
+## Full `User` entity example
+
+```typescript
+import {
+  AggregateRoot,
+  StringValueObject,
+  EnumValueObject,
+} from "@abejarano/ts-mongodb-criteria"
+
+// --- Value Objects ---
+
+class UserId extends StringValueObject {}
+
+class UserName extends StringValueObject {}
+
+class UserEmail extends StringValueObject {}
+
+enum UserRoles { ADMIN = "admin", MEMBER = "member", GUEST = "guest" }
+
+class UserRole extends EnumValueObject<UserRoles> {
+  static fromValue(value: string): UserRole {
+    if (!Object.values(UserRoles).includes(value as UserRoles)) {
+      throw new Error(`Invalid role: ${value}`)
+    }
+    return new UserRole(value as UserRoles, Object.values(UserRoles))
+  }
+
+  protected throwErrorForInvalidValue(value: UserRoles): void {
+    throw new Error(`"${value}" is not a valid UserRole`)
+  }
+}
+
+// --- Aggregate Root ---
+
+export class User extends AggregateRoot {
+  constructor(
+    private readonly id:        UserId,
+    private readonly name:      UserName,
+    private readonly email:     UserEmail,
+    private readonly role:      UserRole,
+    private readonly createdAt: Date,
+  ) {
+    super()
+  }
+
+  // Required by AggregateRoot
+  getId(): string | undefined {
+    return this.id.value
+  }
+
+  // Required by AggregateRoot
+  toPrimitives() {
+    return {
+      _id:       this.id.value,
+      name:      this.name.value,
+      email:     this.email.value,
+      role:      this.role.value,
+      createdAt: this.createdAt,
+    }
+  }
+
+  // Required by AggregateRoot (override the throwing default)
+  static fromPrimitives(data: any): User {
+    return new User(
+      new UserId(data._id),
+      new UserName(data.name),
+      new UserEmail(data.email),
+      UserRole.fromValue(data.role),
+      new Date(data.createdAt),
+    )
+  }
+
+  // Domain helpers
+  isAdmin(): boolean {
+    return this.role.value === UserRoles.ADMIN
+  }
+}
+```
+
+---
+
+## `AggregateRootClass<T>`
+
+```typescript
+export type AggregateRootClass<T extends AggregateRoot> = {
+  fromPrimitives(data: any): T
+}
+```
+
+This utility type captures a *class constructor shape* — specifically, the static `fromPrimitives` method. Pass the class itself (not an instance) to `MongoRepository` so it knows how to hydrate raw MongoDB documents back into your domain type:
+
+```typescript
+import { MongoRepository } from "@abejarano/ts-mongodb-criteria"
+import { User } from "./User"
+
+class UserRepository extends MongoRepository<User> {
+  constructor() {
+    super(User)   // ← AggregateRootClass<User>: User.fromPrimitives will be called
+  }
+
+  protected collectionName(): string {
+    return "users"
+  }
+}
+```
+
+---
+
+## `IRepository<T>` interface
+
+All concrete repository classes in the library implement `IRepository<T>`. The interface defines five methods:
+
+```typescript
+export interface IRepository<T extends AggregateRoot> {
+  many(filter: object, transaction?: MongoTransaction): Promise<T[]>
+  one(filter: object, transaction?: MongoTransaction): Promise<T | null>
+  list<D>(
+    criteria: Criteria,
+    fieldsToExclude?: string[],
+    transaction?: MongoTransaction
+  ): Promise<Paginate<D>>
+  upsert(entity: T, transaction?: MongoTransaction): Promise<void>
+  delete(
+    filter: object,
+    options?: DeleteOptions,
+    transaction?: MongoTransaction
+  ): Promise<void>
+}
+```
+
+| Method | Description |
+|---|---|
+| `many(filter)` | Fetch all documents matching a raw MongoDB filter object. Returns a hydrated array of `T`. |
+| `one(filter)` | Fetch the first document matching a raw MongoDB filter. Returns `T` or `null`. |
+| `list<D>(criteria, fieldsToExclude?)` | Translate a `Criteria` instance into a MongoDB query, run it, and return a `Paginate<D>` with total count and current page results. |
+| `upsert(entity)` | Insert or update a document whose `_id` matches `entity.getId()`. Calls `entity.toPrimitives()` internally. |
+| `delete(filter, options?)` | Delete documents matching a raw MongoDB filter. Pass `{ deleteOne: true }` in options for a single-document delete. |
+
+All methods accept an optional `MongoTransaction` for session-scoped operations.
+
+---
+
+## Value Objects
+
+Value objects are immutable domain primitives that carry their own validation. Rather than passing raw strings and numbers between layers, you wrap them in a typed class that enforces invariants at construction time.
+
+### `ValueObject<T>`
+
+The root base class for all value objects. Holds a single `readonly value: T` and throws `InvalidArgumentError` if the value is `undefined`.
+
+```typescript
+import { ValueObject } from "@abejarano/ts-mongodb-criteria"
+
+// Example: a typed price
+class Price extends ValueObject<number> {
+  constructor(value: number) {
+    super(value)
+    if (value < 0) throw new Error("Price cannot be negative")
+  }
+}
+
+const price = new Price(9.99)
+console.log(price.value)      // 9.99
+console.log(price.toString()) // "9.99"
+
+const other = new Price(9.99)
+console.log(price.equals(other)) // true  — structural equality
+```
+
+Key methods:
+
+| Method | Description |
+|---|---|
+| `equals(other)` | `true` if both objects are the same class and have the same `value`. |
+| `toString()` | Returns `value.toString()`. |
+
+### `StringValueObject`
+
+Extends `ValueObject<string>`. Adds a guard that rejects empty strings and provides a `getValue(): string` helper.
+
+```typescript
+import { StringValueObject } from "@abejarano/ts-mongodb-criteria"
+
+class ProductName extends StringValueObject {}
+class UserEmail   extends StringValueObject {}
+
+const name  = new ProductName("Wireless Keyboard")
+const email = new UserEmail("user@example.com")
+
+console.log(name.value)       // "Wireless Keyboard"
+console.log(email.getValue()) // "user@example.com"
+
+// new ProductName("") → throws InvalidArgumentError: "String should have a length"
+```
+
+### `EnumValueObject<T>`
+
+Extends the enum pattern — holds a `value: T` and validates it against a list of `validValues` at construction time. Subclasses must implement `throwErrorForInvalidValue()`.
+
+```typescript
+import { EnumValueObject } from "@abejarano/ts-mongodb-criteria"
+
+enum OrderStatus { PENDING = "pending", PAID = "paid", CANCELLED = "cancelled" }
+
+class OrderStatusVO extends EnumValueObject<OrderStatus> {
+  constructor(value: OrderStatus) {
+    super(value, Object.values(OrderStatus))
+  }
+
+  protected throwErrorForInvalidValue(value: OrderStatus): void {
+    throw new Error(`"${value}" is not a valid OrderStatus`)
+  }
+
+  static fromValue(raw: string): OrderStatusVO {
+    return new OrderStatusVO(raw as OrderStatus) // validation runs in super()
+  }
+
+  isPending():   boolean { return this.value === OrderStatus.PENDING }
+  isCancelled(): boolean { return this.value === OrderStatus.CANCELLED }
+}
+
+const status = OrderStatusVO.fromValue("paid")
+console.log(status.value)        // "paid"
+console.log(status.isPending())  // false
+
+// OrderStatusVO.fromValue("refunded")
+// → throws: "refunded" is not a valid OrderStatus
+```
+
+`EnumValueObject` is used internally by `OrderType` and `FilterOperator`, and is the recommended base for any domain enum that needs validation.

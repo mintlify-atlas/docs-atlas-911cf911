@@ -1,0 +1,198 @@
+---
+title: "Atomic Writes with MongoTransaction in ts-mongo-criteria"
+sidebarTitle: "Transactions"
+description: "Use MongoTransaction.run() to wrap multiple repository operations in a single MongoDB transaction — any error rolls back all writes automatically."
+---
+
+When a business operation spans more than one collection — or must leave the database in a consistent state even if something goes wrong mid-way — you need a transaction. `MongoTransaction.run()` provides a clean, callback-based API that commits when the callback resolves successfully and rolls back automatically if any error is thrown. You never have to manage session lifecycle yourself.
+
+## How MongoTransaction.run() works
+
+Internally, `run()` follows these steps every time it is called:
+
+1. **Acquires a session** — calls `MongoClientFactory.createClient()` internally to obtain the shared `MongoClient`, then starts a `ClientSession` on it.
+2. **Wraps the callback** — executes your callback inside `session.withTransaction()`, which provides automatic retry logic for transient errors such as write conflicts.
+3. **Commits on success** — when your callback resolves without throwing, MongoDB commits the multi-document write atomically.
+4. **Rolls back on error** — if your callback throws (or an await rejects), the session is aborted, all uncommitted writes are discarded, and the error is rethrown to your caller.
+5. **Ends the session** — the `ClientSession` is closed in a `finally` block regardless of outcome.
+
+```
+MongoTransaction.run(callback)
+        │
+        ├─ start session
+        │
+        ├─ session.withTransaction(callback)
+        │       │
+        │       ├─ success ─────► commit ─────► end session
+        │       │
+        │       └─ error  ─────► abort  ─────► end session ─► rethrow
+        │
+        └─ (never throws before calling your callback)
+```
+
+## Full example: transfer with three repository operations
+
+The following example registers a user, creates their profile, and deletes any pending invitation — all inside one atomic unit. If the profile upsert fails, the user document is never committed either.
+
+```typescript
+import {
+  MongoTransaction,
+  MongoRepository,
+  AggregateRoot,
+  Criteria,
+  Filters,
+  Operator,
+  Order,
+} from "@abejarano/ts-mongodb-criteria";
+import { Collection } from "mongodb";
+
+// ── Entities (abbreviated) ──────────────────────────────────────────────────
+
+class User extends AggregateRoot {
+  constructor(
+    private readonly id: string,
+    private readonly email: string
+  ) { super(); }
+  getId() { return this.id; }
+  toPrimitives() { return { id: this.id, email: this.email }; }
+  static override fromPrimitives(d: any) { return new User(d.id, d.email); }
+  getEmail() { return this.email; }
+}
+
+class UserProfile extends AggregateRoot {
+  constructor(
+    private readonly id: string,
+    private readonly userId: string,
+    private readonly displayName: string
+  ) { super(); }
+  getId() { return this.id; }
+  toPrimitives() { return { id: this.id, userId: this.userId, displayName: this.displayName }; }
+  static override fromPrimitives(d: any) {
+    return new UserProfile(d.id, d.userId, d.displayName);
+  }
+}
+
+class Invitation extends AggregateRoot {
+  constructor(private readonly id: string, private readonly email: string) { super(); }
+  getId() { return this.id; }
+  toPrimitives() { return { id: this.id, email: this.email }; }
+  static override fromPrimitives(d: any) { return new Invitation(d.id, d.email); }
+}
+
+// ── Repositories ─────────────────────────────────────────────────────────────
+
+class UserRepository extends MongoRepository<User> {
+  constructor() { super(User); }
+  collectionName() { return "users"; }
+  protected async ensureIndexes(c: Collection) {
+    await c.createIndex({ email: 1 }, { unique: true });
+  }
+}
+
+class UserProfileRepository extends MongoRepository<UserProfile> {
+  constructor() { super(UserProfile); }
+  collectionName() { return "user_profiles"; }
+  protected async ensureIndexes(c: Collection) {
+    await c.createIndex({ userId: 1 }, { unique: true });
+  }
+}
+
+class InvitationRepository extends MongoRepository<Invitation> {
+  constructor() { super(Invitation); }
+  collectionName() { return "invitations"; }
+  protected async ensureIndexes(c: Collection) {
+    await c.createIndex({ email: 1 });
+  }
+}
+
+// ── Use-case: register a user from an invitation ──────────────────────────────
+
+async function registerUserFromInvitation(
+  userId: string,
+  email: string,
+  displayName: string,
+  invitationId: string
+): Promise<void> {
+  const userRepo       = new UserRepository();
+  const profileRepo    = new UserProfileRepository();
+  const invitationRepo = new InvitationRepository();
+
+  await MongoTransaction.run(async (tx) => {
+    // 1. Persist the new user
+    const user = new User(userId, email);
+    await userRepo.upsert(user, tx);
+
+    // 2. Persist the profile linked to the user
+    const profile = new UserProfile(`profile-${userId}`, userId, displayName);
+    await profileRepo.upsert(profile, tx);
+
+    // 3. Remove the invitation that was consumed
+    await invitationRepo.delete({ id: invitationId }, undefined, tx);
+
+    // 4. Read through the same session to confirm the user was written
+    const persisted = await userRepo.one({ id: userId }, tx);
+    if (!persisted) {
+      // Throwing inside the callback triggers an automatic rollback
+      throw new Error("User was not found after upsert — aborting transaction");
+    }
+  });
+}
+```
+
+## Reading inside a transaction
+
+Every repository method that accepts a `transaction` parameter will execute within the same `ClientSession`, giving you a consistent read of your own writes. Pass the `tx` argument explicitly:
+
+```typescript
+await MongoTransaction.run(async (tx) => {
+  await orderRepo.upsert(order, tx);
+
+  // Read the just-written document through the same session
+  const saved = await orderRepo.one({ id: order.getId() }, tx);
+
+  // list() accepts the transaction as its third argument (after fieldsToExclude)
+  const relatedOrders = await orderRepo.list(
+    criteria,
+    [],    // fieldsToExclude — pass an empty array when unused
+    tx
+  );
+});
+```
+
+## Error handling and rollback behavior
+
+Wrap `MongoTransaction.run()` in a `try/catch` to handle errors gracefully in your application layer. The library guarantees the rollback has already completed by the time the `catch` block runs.
+
+```typescript
+try {
+  await MongoTransaction.run(async (tx) => {
+    await userRepo.upsert(user, tx);
+    await profileRepo.upsert(profile, tx);
+    await invitationRepo.delete({ email: user.getEmail() }, undefined, tx);
+  });
+
+  console.log("Registration complete — all writes committed.");
+} catch (error) {
+  // By the time we reach here, MongoDB has already rolled back every
+  // write that happened inside the callback. The database is unchanged.
+  console.error("Registration failed — all writes rolled back:", error);
+  throw error; // re-throw or map to an application error
+}
+```
+
+<Warning>
+  MongoDB transactions require a **replica set** or **sharded cluster**. A
+  standalone `mongod` instance does **not** support multi-document transactions.
+  Attempting to use `MongoTransaction.run()` against a standalone node will
+  throw a `MongoServerError` at runtime. For local development, use
+  `mongod --replSet rs0` or spin up a single-node replica set with
+  `rs.initiate()` in the MongoDB shell.
+</Warning>
+
+<Note>
+  `MongoClientFactory.createClient()` is called internally by the library — you
+  do not need to create or close the `MongoClient` yourself before calling
+  `MongoTransaction.run()`. The client is a singleton that is reused across all
+  repository operations in the same process. Set the `MONGO_URI` environment
+  variable and the library handles the rest.
+</Note>

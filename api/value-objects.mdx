@@ -1,0 +1,329 @@
+---
+title: "Value Objects and Domain Primitives — ts-mongo-criteria API"
+sidebarTitle: "Value Objects"
+description: "ValueObject, StringValueObject, EnumValueObject, AggregateRoot, and InvalidArgumentError are the DDD building blocks exported by ts-mongo-criteria for domain modeling."
+---
+
+The `@abejarano/ts-mongodb-criteria` library ships a set of **Domain-Driven Design (DDD) primitives** that go hand-in-hand with its MongoDB query builder. These classes give you a type-safe foundation for modeling your domain: wrap every scalar field in a `ValueObject`, define bounded enumerations with `EnumValueObject`, anchor your aggregate roots with `AggregateRoot`, and catch validation failures through `InvalidArgumentError`. All primitives are tree-shakeable and have zero runtime dependencies beyond the Node.js standard library.
+
+---
+
+## Imports
+
+```typescript
+import { ValueObject, StringValueObject, EnumValueObject } from "@abejarano/ts-mongodb-criteria"
+import { AggregateRoot, InvalidArgumentError } from "@abejarano/ts-mongodb-criteria"
+```
+
+All symbols are re-exported from the package root, so a single import statement is enough regardless of which primitives you need.
+
+---
+
+## `ValueObject<T>`
+
+`ValueObject<T>` is the abstract base class for every domain primitive. It wraps a single scalar value and enforces **structural equality** — two `ValueObject` instances are equal when they share the same constructor name *and* the same underlying value.
+
+### Type parameter
+
+| Parameter | Constraint | Description |
+|-----------|-----------|-------------|
+| `T` | `String \| string \| number \| Boolean \| boolean \| Date` | The primitive type stored inside the value object. |
+
+The `Primitives` union is also exported so you can reference it in your own generic constraints:
+
+```typescript
+import { Primitives } from "@abejarano/ts-mongodb-criteria"
+```
+
+### Members
+
+| Member | Signature | Description |
+|--------|-----------|-------------|
+| `value` | `readonly T` | The wrapped primitive. Set once in the constructor and never mutated. |
+| `equals` | `(other: ValueObject<T>): boolean` | Returns `true` when `other` has the same constructor name and the same `value`. Safe to call across class hierarchies. |
+| `toString` | `(): string` | Returns the string representation of `value`. Useful for logging and serialisation. |
+
+### Validation
+
+The constructor calls a private `ensureValueIsDefined` guard. If you pass `undefined` as the value — even when TypeScript's type system might not catch it at the call-site — the constructor throws an `InvalidArgumentError` immediately, preventing a partially constructed object from escaping into your domain.
+
+### Example — custom value object
+
+```typescript
+import { ValueObject, InvalidArgumentError } from "@abejarano/ts-mongodb-criteria"
+
+class ProductSku extends ValueObject<string> {
+  // Pattern: SKU-XXXXX (five alphanumeric characters)
+  private static readonly SKU_PATTERN = /^SKU-[A-Z0-9]{5}$/
+
+  constructor(value: string) {
+    super(value)
+    if (!ProductSku.SKU_PATTERN.test(value)) {
+      throw new InvalidArgumentError(`"${value}" is not a valid SKU.`)
+    }
+  }
+
+  static create(value: string): ProductSku {
+    return new ProductSku(value)
+  }
+}
+
+const sku = ProductSku.create("SKU-AB123")
+console.log(sku.value)       // "SKU-AB123"
+console.log(sku.toString())  // "SKU-AB123"
+
+const other = ProductSku.create("SKU-AB123")
+console.log(sku.equals(other)) // true
+```
+
+---
+
+## `StringValueObject`
+
+`StringValueObject` extends `ValueObject<string>` and adds a **factory method** and a **non-empty guard**. Use it as the base class for any domain field whose natural type is a non-empty string — identifiers, names, labels, slugs, and so on.
+
+Within the library itself, both `FilterField` and `OrderBy` extend `StringValueObject`, which means any class you build on top of it is directly compatible with the query builder.
+
+### Members
+
+| Member | Signature | Description |
+|--------|-----------|-------------|
+| `create` | `static (value: string): StringValueObject` | Factory that constructs and returns a `StringValueObject`. Prefer over `new` for consistent error semantics. |
+| `getValue` | `(): string` | Returns the wrapped string value. Equivalent to reading `.value` directly. |
+
+### Validation
+
+In addition to the `undefined` check inherited from `ValueObject`, the `StringValueObject` constructor throws `InvalidArgumentError` when the supplied string is empty (`""`). This makes it impossible to model a domain field whose invariant is "must have a value" with an accidentally blank string.
+
+### Example — domain fields extending `StringValueObject`
+
+```typescript
+import { StringValueObject } from "@abejarano/ts-mongodb-criteria"
+
+// A non-empty category slug
+class CategorySlug extends StringValueObject {
+  static create(value: string): CategorySlug {
+    return new CategorySlug(value)
+  }
+}
+
+// A non-empty product name
+class ProductName extends StringValueObject {
+  static create(value: string): ProductName {
+    return new ProductName(value)
+  }
+}
+
+const slug = CategorySlug.create("electronics")
+const name = ProductName.create("Wireless Headphones")
+
+console.log(slug.getValue()) // "electronics"
+console.log(name.getValue()) // "Wireless Headphones"
+
+// Structural equality is type-aware — different classes never equal each other
+// even when the underlying string is the same:
+console.log(slug.equals(name)) // false
+```
+
+---
+
+## `EnumValueObject<T>`
+
+`EnumValueObject<T>` is the abstract base class for domain types that represent a **closed set of valid values** — order statuses, payment methods, user roles, and similar bounded enumerations. The constructor receives both the chosen value and the complete list of valid values, and calls `checkValueIsValid` to reject anything outside that list.
+
+### Constructor
+
+```typescript
+constructor(value: T, public readonly validValues: T[])
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `value` | The value to store. Must be a member of `validValues`. |
+| `validValues` | The exhaustive list of accepted values. Exposed as a `readonly` property so callers can introspect the enum's domain. |
+
+### Members
+
+| Member | Signature | Description |
+|--------|-----------|-------------|
+| `value` | `readonly T` | The wrapped enum value. |
+| `validValues` | `readonly T[]` | The list of valid values passed to the constructor. |
+| `checkValueIsValid` | `(value: T): void` | Throws `throwErrorForInvalidValue` when `value` is not in `validValues`. Called automatically by the constructor. |
+| `throwErrorForInvalidValue` | `protected abstract (value: T): void` | **Must be implemented** by every subclass. Called with the offending value when validation fails. Throw the domain error that makes sense for your context. |
+
+### Example — `StatusValueObject`
+
+```typescript
+import { EnumValueObject, InvalidArgumentError } from "@abejarano/ts-mongodb-criteria"
+
+type Status = "pending" | "active" | "suspended" | "deleted"
+
+const ALL_STATUSES: Status[] = ["pending", "active", "suspended", "deleted"]
+
+class StatusValueObject extends EnumValueObject<Status> {
+  constructor(value: Status) {
+    super(value, ALL_STATUSES)
+  }
+
+  static create(value: string): StatusValueObject {
+    // Validate before casting so the error message is friendly
+    if (!ALL_STATUSES.includes(value as Status)) {
+      throw new InvalidArgumentError(
+        `"${value}" is not a valid status. Expected one of: ${ALL_STATUSES.join(", ")}.`
+      )
+    }
+    return new StatusValueObject(value as Status)
+  }
+
+  protected throwErrorForInvalidValue(value: Status): void {
+    throw new InvalidArgumentError(
+      `"${value}" is not a valid status. Expected one of: ${this.validValues.join(", ")}.`
+    )
+  }
+}
+
+const status = StatusValueObject.create("active")
+console.log(status.value)        // "active"
+console.log(status.validValues)  // ["pending", "active", "suspended", "deleted"]
+```
+
+---
+
+## `AggregateRoot`
+
+`AggregateRoot` is the abstract base class for your **aggregate root entities** — the top-level objects in your DDD aggregates that map directly to MongoDB documents. It declares the serialisation contract every entity must fulfil, and provides a `fromPrimitives` factory that subclasses override to reconstruct a fully typed entity from a raw document.
+
+### Members
+
+| Member | Signature | Description |
+|--------|-----------|-------------|
+| `getId` | `abstract (): string \| undefined` | Returns the entity's unique identifier, or `undefined` if the entity has not yet been persisted. |
+| `toPrimitives` | `abstract (): any` | Serialises the entity to a plain JavaScript object suitable for storing in MongoDB. |
+| `fromPrimitives` | `static (data: any): AggregateRoot` | Base implementation throws `Error("must implement")`. **Override in every subclass** to reconstruct an entity from a raw document. |
+
+### `AggregateRootClass<T>` type
+
+```typescript
+type AggregateRootClass<T extends AggregateRoot> = { fromPrimitives(data: any): T }
+```
+
+This utility type represents the *constructor side* of an aggregate root class — i.e., the class itself (not an instance). Use it when you need to pass a repository or mapper the class reference rather than an instance:
+
+```typescript
+function hydrateAll<T extends AggregateRoot>(
+  docs: any[],
+  cls: AggregateRootClass<T>
+): T[] {
+  return docs.map((doc) => cls.fromPrimitives(doc))
+}
+```
+
+### Example — full `User` entity
+
+```typescript
+import { AggregateRoot } from "@abejarano/ts-mongodb-criteria"
+import { StringValueObject } from "@abejarano/ts-mongodb-criteria"
+
+// Value objects for User fields
+class UserId extends StringValueObject {
+  static create(value: string) { return new UserId(value) }
+}
+class UserEmail extends StringValueObject {
+  static create(value: string) { return new UserEmail(value) }
+}
+class UserName extends StringValueObject {
+  static create(value: string) { return new UserName(value) }
+}
+
+interface UserPrimitives {
+  id: string
+  email: string
+  name: string
+}
+
+class User extends AggregateRoot {
+  constructor(
+    private readonly id: UserId,
+    private readonly email: UserEmail,
+    private readonly name: UserName
+  ) {
+    super()
+  }
+
+  // 1. Reconstruct from a raw MongoDB document
+  static fromPrimitives(data: UserPrimitives): User {
+    return new User(
+      UserId.create(data.id),
+      UserEmail.create(data.email),
+      UserName.create(data.name)
+    )
+  }
+
+  // 2. Return the entity's identity
+  getId(): string | undefined {
+    return this.id.getValue()
+  }
+
+  // 3. Serialise for persistence
+  toPrimitives(): UserPrimitives {
+    return {
+      id: this.id.getValue(),
+      email: this.email.getValue(),
+      name: this.name.getValue(),
+    }
+  }
+}
+
+// Usage
+const user = User.fromPrimitives({
+  id: "u-001",
+  email: "ada@example.com",
+  name: "Ada Lovelace",
+})
+
+console.log(user.getId())        // "u-001"
+console.log(user.toPrimitives()) // { id: "u-001", email: "ada@example.com", name: "Ada Lovelace" }
+```
+
+---
+
+## `InvalidArgumentError`
+
+`InvalidArgumentError` extends the native `Error` class and is the single error type thrown by the library's validation logic. Catching it at an application boundary (e.g., an HTTP handler or a command handler) lets you return a precise `400 Bad Request` response without leaking internal stack traces.
+
+### Where it is thrown
+
+| Location | Trigger |
+|----------|---------|
+| `ValueObject` constructor | `value` is `undefined` |
+| `StringValueObject` constructor | `value` is an empty string (`""`) |
+| `EnumValueObject.checkValueIsValid` | `value` is not in `validValues` (via `throwErrorForInvalidValue`) |
+| `FilterOperator.fromValue()` | Unknown filter operator string |
+| `OrderType.fromValue()` | Unknown order direction string |
+
+### Example — HTTP boundary handler
+
+```typescript
+import { InvalidArgumentError } from "@abejarano/ts-mongodb-criteria"
+import type { Request, Response } from "express"
+import { UserSearcher } from "./UserSearcher"
+
+export async function searchUsersHandler(req: Request, res: Response) {
+  try {
+    const searcher = new UserSearcher(/* repository */)
+    const results = await searcher.run(req.query)
+    res.status(200).json(results)
+  } catch (err) {
+    if (err instanceof InvalidArgumentError) {
+      // Domain validation failed — the request contained bad input
+      res.status(400).json({ error: err.message })
+    } else {
+      // Unexpected infrastructure or programming error
+      console.error(err)
+      res.status(500).json({ error: "Internal server error" })
+    }
+  }
+}
+```
+
+Because `InvalidArgumentError` extends `Error`, it carries `.message` and `.stack` just like any standard JavaScript error, making it straightforward to integrate with existing logging and monitoring pipelines.

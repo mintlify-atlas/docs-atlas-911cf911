@@ -1,0 +1,194 @@
+---
+title: "Install and Configure ts-mongo-criteria"
+sidebarTitle: "Installation"
+description: "Install @abejarano/ts-mongodb-criteria from npm and configure the MONGO_URI environment variable to connect to your MongoDB instance."
+---
+
+`@abejarano/ts-mongodb-criteria` is published to the public npm registry. It
+ships dual CJS and ESM builds and a bundled TypeScript declaration file, so it
+works with every modern Node.js module system and bundler without extra
+configuration. This page covers the full install process, environment variable
+reference, module format details, and TypeScript project settings.
+
+<Warning>
+  `@abejarano/ts-mongodb-criteria` requires **Node.js 20 or later**. The
+  library uses native ES2022 class fields and top-level `await` patterns that
+  are not available in older Node.js releases. Check your version with
+  `node --version` before installing.
+</Warning>
+
+## Install the Package
+
+<CodeGroup>
+```bash npm
+npm install @abejarano/ts-mongodb-criteria
+```
+
+```bash yarn
+yarn add @abejarano/ts-mongodb-criteria
+```
+
+```bash pnpm
+pnpm add @abejarano/ts-mongodb-criteria
+```
+
+```bash bun
+bun add @abejarano/ts-mongodb-criteria
+```
+</CodeGroup>
+
+### Peer Dependency: mongodb
+
+The MongoDB driver is declared as a **peer dependency** and must be installed
+separately in your project. Any `mongodb` release at or above version 6 is
+supported:
+
+```bash
+npm install mongodb@^6.0.0
+```
+
+If `mongodb` is already present in your `package.json` at version 6 or higher,
+no additional step is needed. If it is missing, the library will throw a
+runtime error when it tries to open a connection.
+
+## Environment Variables
+
+`MongoClientFactory` reads your connection details from process environment
+variables at runtime. The simplest approach is to supply a full connection
+string via `MONGO_URI`:
+
+```bash .env
+# ── Minimal: full connection string ──────────────────────────────────────────
+MONGO_URI=mongodb://localhost:27017/mydb
+
+# ── MongoDB Atlas ─────────────────────────────────────────────────────────────
+MONGO_URI=mongodb+srv://user:password@cluster0.abc123.mongodb.net/mydb
+```
+
+If you prefer to compose the URI from individual parts — for example when
+credentials are injected separately by a secrets manager — you can build the
+`MONGO_URI` value yourself using the component variables before process start:
+
+```bash .env
+# Component variables (assemble into MONGO_URI before startup)
+MONGO_USER=myapp
+MONGO_PASS=s3cr3t
+MONGO_SERVER=cluster0.abc123.mongodb.net
+MONGO_DB=production
+
+# Resulting MONGO_URI (set this in your startup script or CI pipeline)
+# MONGO_URI=mongodb+srv://${MONGO_USER}:${MONGO_PASS}@${MONGO_SERVER}/${MONGO_DB}
+```
+
+<Note>
+  The library reads **only** `MONGO_URI`. The component variables (`MONGO_USER`,
+  `MONGO_PASS`, `MONGO_SERVER`, `MONGO_DB`) are not read by the library
+  directly. They are shown here as a conventional naming pattern for teams that
+  assemble the connection string in a startup script or infrastructure layer.
+</Note>
+
+Load the variable before your first import from the library. A typical pattern
+with `dotenv`:
+
+```typescript
+import "dotenv/config"; // must run before any MongoRepository is constructed
+import { UserRepository } from "./UserRepository";
+```
+
+## CommonJS vs. ESM
+
+The package ships both module formats under the `dist/` directory and declares
+them via `package.json` `exports` so Node.js and bundlers automatically select
+the right one:
+
+```json package.json (library exports — for reference)
+{
+  "main":   "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types":  "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types":   "./dist/types/index.d.ts",
+      "import":  "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  }
+}
+```
+
+| Import style | File served |
+|---|---|
+| `import … from "@abejarano/ts-mongodb-criteria"` | `dist/esm/index.js` |
+| `const … = require("@abejarano/ts-mongodb-criteria")` | `dist/cjs/index.js` |
+| TypeScript type resolution | `dist/types/index.d.ts` |
+
+Both builds expose exactly the same public surface. You do not need to change
+import paths or add special loader flags to switch between them.
+
+## TypeScript Configuration
+
+For TypeScript to resolve the `"exports"` field in `package.json` correctly,
+set `moduleResolution` to `bundler`, `node16`, or `nodenext` in your
+`tsconfig.json`:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "outDir": "dist"
+  }
+}
+```
+
+With `"moduleResolution": "bundler"` (recommended for Vite / esbuild / bun
+projects):
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "outDir": "dist"
+  }
+}
+```
+
+The legacy `"moduleResolution": "node"` does **not** honour the `exports` field
+and may fail to locate the type declaration file. Upgrade to one of the three
+supported strategies above if you see module-resolution errors after install.
+
+## Package Exports Reference
+
+The three entrypoints published with the package:
+
+| Export condition | Resolved path | Usage |
+|---|---|---|
+| `types` | `dist/types/index.d.ts` | TypeScript declarations |
+| `import` (ESM) | `dist/esm/index.js` | `import` statements, ESM bundlers |
+| `require` (CJS) | `dist/cjs/index.js` | `require()` calls, CommonJS bundlers |
+
+All named exports (`Criteria`, `Filters`, `Order`, `Operator`, `MongoRepository`,
+`AggregateRoot`, `MongoTransaction`, `IRepository`, `Paginate`, `OrCondition`,
+`OrderTypes`, and the value-object base classes) are available from the single
+package root:
+
+```typescript
+import {
+  Criteria,
+  Filters,
+  Order,
+  Operator,
+  MongoRepository,
+  MongoTransaction,
+  AggregateRoot,
+  OrderTypes,
+} from "@abejarano/ts-mongodb-criteria";
+```
+
+No sub-path imports are required.

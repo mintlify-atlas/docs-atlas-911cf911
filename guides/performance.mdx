@@ -1,0 +1,296 @@
+---
+title: "Performance Optimization for ts-mongo-criteria Queries"
+sidebarTitle: "Performance"
+description: "Index strategies, filter ordering, pagination patterns, and monitoring techniques to keep ts-mongo-criteria queries fast in production MongoDB deployments."
+---
+
+Query performance in a Criteria-based codebase follows the same fundamental rules as any MongoDB application — the library translates your `Criteria` objects into standard `find` calls, so every MongoDB index, query shape, and execution-plan principle applies directly. This guide covers the most impactful optimisations, from index design to pagination patterns, with concrete `ensureIndexes` examples and real monitoring snippets.
+
+## Index Strategy
+
+Well-designed indexes are the single biggest lever for query performance. Create them once in `ensureIndexes` so they are always in place when the collection is first accessed.
+
+### Single-field indexes
+
+Use single-field indexes for columns that appear frequently in equality or range filters:
+
+```typescript
+import { Collection } from "mongodb";
+
+protected async ensureIndexes(collection: Collection): Promise<void> {
+  // Equality filters (Operator.EQUAL / Operator.NOT_EQUAL)
+  await collection.createIndex({ status: 1 });
+  await collection.createIndex({ email: 1 }, { unique: true });
+
+  // Range filters (Operator.GT, GTE, LT, LTE, BETWEEN)
+  await collection.createIndex({ age: 1 });
+  await collection.createIndex({ createdAt: -1 });
+  await collection.createIndex({ price: 1 });
+}
+```
+
+### Compound indexes
+
+Compound indexes support queries that combine multiple filter and sort fields. Field order matters: put **equality filters first**, **range filters next**, and the **sort field last**.
+
+```typescript
+protected async ensureIndexes(collection: Collection): Promise<void> {
+  // status = ? AND age >= ? ORDER BY createdAt DESC
+  await collection.createIndex({ status: 1, age: 1, createdAt: -1 });
+
+  // category = ? AND price >= ? AND price <= ? ORDER BY popularity DESC
+  await collection.createIndex({ category: 1, price: 1, popularity: -1 });
+
+  // userId = ? AND status = ? ORDER BY createdAt DESC
+  await collection.createIndex({ userId: 1, status: 1, createdAt: -1 });
+}
+```
+
+The ESR rule (Equality → Sort → Range) is a helpful mnemonic for deciding field order inside a compound index.
+
+### Text indexes for CONTAINS / NOT_CONTAINS
+
+When a `Criteria` uses `Operator.CONTAINS` or `NOT_CONTAINS`, MongoDB runs a regex scan unless a text index is available. Create a text index on every field you search:
+
+```typescript
+protected async ensureIndexes(collection: Collection): Promise<void> {
+  // Basic text index
+  await collection.createIndex({ name: "text", description: "text" });
+
+  // Weighted text index — name matches rank higher than description matches
+  await collection.createIndex(
+    { name: "text", description: "text", brand: "text" },
+    { weights: { name: 10, brand: 5, description: 1 } }
+  );
+
+  // Compound: equality prefix + text search on the remaining fields
+  await collection.createIndex({ status: 1, name: "text", description: "text" });
+}
+```
+
+## Filter Ordering
+
+The order you pass filters to `Criteria` influences which query plan MongoDB chooses. Place filters in this order for the best results:
+
+1. **Most selective equality filters first** (unique IDs, email addresses)
+2. **Lower-selectivity equality filters** (status, category, role)
+3. **Range filters** (age, price, date windows)
+4. **Text / OR filters last** — these are the most expensive
+
+```typescript
+import {
+  Criteria,
+  Filters,
+  Order,
+  Operator,
+  OrCondition,
+} from "@abejarano/ts-mongodb-criteria";
+
+// ✅ Optimal ordering
+const criteria = new Criteria(
+  Filters.fromValues([
+    // 1. Pinpoint the tenant
+    new Map([["field", "userId"],    ["operator", Operator.EQUAL], ["value", userId]]),
+    // 2. Status enum
+    new Map([["field", "status"],    ["operator", Operator.EQUAL], ["value", "active"]]),
+    // 3. Range on age
+    new Map([["field", "age"],       ["operator", Operator.GTE],   ["value", "18"]]),
+    // 4. Date window
+    new Map([["field", "createdAt"], ["operator", Operator.GTE],   ["value", since.toISOString()]]),
+    // 5. Freetext search — always last
+    new Map([
+      ["field",    "search"],
+      ["operator", Operator.OR],
+      ["value",    [
+        { field: "name",  operator: Operator.CONTAINS, value: term },
+        { field: "email", operator: Operator.CONTAINS, value: term },
+      ] as OrCondition[]],
+    ]),
+  ]),
+  Order.desc("createdAt"),
+  20,
+  page
+);
+```
+
+## Pagination
+
+### Standard offset pagination
+
+`Criteria` accepts `limit` and `page` as its third and fourth arguments. MongoDB implements this as `skip((page-1)*limit).limit(limit)`, which is efficient for small page numbers.
+
+```typescript
+// Page 2, 20 items per page — skip = 20, fine for early pages
+const criteria = new Criteria(filters, Order.desc("createdAt"), 20, 2);
+```
+
+### Deep pagination warning
+
+Each additional page requires MongoDB to scan and discard `(page-1)*limit` documents before returning results. Page 1 000 with a limit of 20 causes a skip of 19 980 — even with an index, this is expensive at scale.
+
+```typescript
+// ❌ Expensive — avoid page numbers in the hundreds or thousands
+const deepCriteria = new Criteria(Filters.none(), Order.desc("createdAt"), 20, 1000);
+```
+
+### Cursor-based pagination for large datasets
+
+Replace the page number with a range filter on the sort key to implement efficient cursor-based (keyset) pagination:
+
+```typescript
+function nextPage(lastCreatedAt: string, limit = 20): Criteria {
+  return new Criteria(
+    Filters.fromValues([
+      new Map([["field", "status"],    ["operator", Operator.EQUAL], ["value", "active"]]),
+      new Map([["field", "createdAt"], ["operator", Operator.LT],    ["value", lastCreatedAt]]),
+    ]),
+    Order.desc("createdAt"),
+    limit
+    // no page argument needed — the filter IS the cursor
+  );
+}
+
+// First page
+const page1 = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", "active"]]),
+  ]),
+  Order.desc("createdAt"),
+  20
+);
+
+const result   = await repo.list<User>(page1);
+const lastItem = result.results.at(-1);
+
+// Subsequent page
+if (lastItem) {
+  const page2 = nextPage(lastItem.toPrimitives().createdAt as string);
+}
+```
+
+## Limiting OR conditions
+
+OR filters (`Operator.OR`) are expanded into a MongoDB `$or` array. A small number of conditions (3–5) uses the index union efficiently; beyond 10 conditions, MongoDB may fall back to a collection scan.
+
+```typescript
+// ✅ Fine — 3 OR branches
+const searchConditions: OrCondition[] = [
+  { field: "name",  operator: Operator.CONTAINS, value: term },
+  { field: "email", operator: Operator.CONTAINS, value: term },
+  { field: "phone", operator: Operator.CONTAINS, value: term },
+];
+
+// ❌ Avoid — 10+ OR branches cause serious performance degradation
+// Instead, denormalise into a composite "searchText" field and use a text index:
+//   await collection.createIndex({ searchText: "text" });
+```
+
+## fieldsToExclude
+
+Pass an array of field names as the second argument to `list()` to project out fields you do not need. This reduces the bytes transferred from MongoDB to your application server.
+
+```typescript
+// Omit the hashed password and the Mongoose version key
+const result = await repo.list<UserDTO>(criteria, ["passwordHash", "__v"]);
+```
+
+## Performance monitoring
+
+Wrap `list()` calls with a simple timing helper to surface slow queries in your logs or APM tool:
+
+```typescript
+import {
+  Criteria,
+  MongoRepository,
+  AggregateRoot,
+  Paginate,
+} from "@abejarano/ts-mongodb-criteria";
+
+async function timedList<T extends AggregateRoot, D>(
+  repo: MongoRepository<T>,
+  criteria: Criteria,
+  fieldsToExclude: string[] = [],
+  label = repo.collectionName()
+): Promise<Paginate<D>> {
+  const start = Date.now();
+
+  try {
+    const result = await repo.list<D>(criteria, fieldsToExclude);
+    const ms = Date.now() - start;
+
+    if (ms > 500) {
+      console.warn(`[SLOW QUERY] ${label} took ${ms}ms — ${result.count} docs`);
+    } else {
+      console.debug(`[query] ${label} ${ms}ms — ${result.count} docs`);
+    }
+
+    return result;
+  } catch (err) {
+    console.error(`[query error] ${label} after ${Date.now() - start}ms`, err);
+    throw err;
+  }
+}
+
+// Usage
+const result = await timedList(userRepo, criteria, ["passwordHash"], "users:search");
+```
+
+## Common issues
+
+<AccordionGroup>
+  <Accordion title="Collection scan (COLLSCAN)">
+    **Symptom:** Queries are slow on large collections and `explain()` shows `COLLSCAN` in the winning plan.
+
+    **Cause:** No index covers the filter field(s) used in your `Criteria`.
+
+    **Fix:** Add the missing index in `ensureIndexes`:
+
+    ```typescript
+    protected async ensureIndexes(collection: Collection): Promise<void> {
+      // If you filter by `department`, add this:
+      await collection.createIndex({ department: 1 });
+    }
+    ```
+
+    Then verify with `db.collection.explain("executionStats").find(yourFilter)` that the stage changes from `COLLSCAN` to `IXSCAN`.
+  </Accordion>
+
+  <Accordion title="Inefficient text search (regex without text index)">
+    **Symptom:** `Operator.CONTAINS` queries are slow; `explain()` shows a `COLLSCAN` with a `$regex` filter.
+
+    **Cause:** The fields targeted by `CONTAINS` / `OR` do not have a MongoDB text index, so every document must be scanned and tested with a regex.
+
+    **Fix:** Create a text index covering all searched fields:
+
+    ```typescript
+    await collection.createIndex(
+      { name: "text", description: "text", brand: "text" },
+      { weights: { name: 10, brand: 5, description: 1 } }
+    );
+    ```
+
+    For more than five fields, consider denormalising into a single `searchText` field and indexing only that field to keep the text index compact.
+  </Accordion>
+
+  <Accordion title="Deep pagination (large page numbers)">
+    **Symptom:** Response times increase linearly with the page number; page 500+ is noticeably slow.
+
+    **Cause:** MongoDB implements offset pagination as a `skip(n)` — it must traverse and discard `n` index entries before returning results.
+
+    **Fix:** Switch to cursor-based pagination for datasets where users need to scroll beyond the first 50–100 pages. Use a range filter on the sort key instead of a page number (see the [Pagination](#pagination) section above).
+  </Accordion>
+
+  <Accordion title="Sorting without a supporting index (in-memory sort)">
+    **Symptom:** `explain()` shows a `SORT` stage with `memLimit` warnings; queries occasionally fail with a "sort exceeded memory limit" error.
+
+    **Cause:** The field passed to `Order.desc()` / `Order.asc()` is not the last field of the compound index that covers the query.
+
+    **Fix:** Ensure the compound index ends with the sort field in the correct direction:
+
+    ```typescript
+    // Query: status = "active", sorted by lastLogin DESC
+    // Index must have lastLogin at the end and match the sort direction:
+    await collection.createIndex({ status: 1, lastLogin: -1 });
+    ```
+  </Accordion>
+</AccordionGroup>

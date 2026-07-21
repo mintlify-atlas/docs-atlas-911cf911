@@ -1,47 +1,269 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with ts-mongo-criteria in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Install @abejarano/ts-mongodb-criteria, configure your MongoDB connection, build your first Criteria query, and execute it through a typed repository."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through everything you need to go from zero to a running
+paginated query against MongoDB. By the end you will have a typed `User`
+aggregate, a `UserRepository`, a `Criteria` query, and a printed
+`Paginate<User>` result — all in less than five minutes.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+### Install the package
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+<CodeGroup>
+```bash npm
+npm install @abejarano/ts-mongodb-criteria
+```
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+```bash yarn
+yarn add @abejarano/ts-mongodb-criteria
+```
+
+```bash pnpm
+pnpm add @abejarano/ts-mongodb-criteria
+```
+
+```bash bun
+bun add @abejarano/ts-mongodb-criteria
+```
+</CodeGroup>
+
+The `mongodb` peer dependency must also be present in your project:
+
+```bash
+npm install mongodb@^6.0.0
+```
+
+### Set the MONGO_URI environment variable
+
+The library's `MongoClientFactory` reads a single environment variable to open
+its connection. Create (or update) a `.env` file in your project root:
+
+```bash .env
+# Local MongoDB
+MONGO_URI=mongodb://localhost:27017/mydb
+
+# MongoDB Atlas
+MONGO_URI=mongodb+srv://user:password@cluster0.abc123.mongodb.net/mydb
+```
+
+<Note>
+  `MONGO_URI` is the only required environment variable. If it is missing when
+  any repository method is first called, the library throws:
+  `"MONGO_URI environment variables are missing to connect to the MongoDB server"`.
+  Load the variable with a library such as `dotenv` before importing from
+  `@abejarano/ts-mongodb-criteria`.
+</Note>
+
+### Define a domain entity
+
+Extend `AggregateRoot` and implement the three required members: `getId()`,
+`toPrimitives()`, and the static `fromPrimitives()`. The repository uses
+`fromPrimitives` to hydrate documents retrieved from MongoDB back into typed
+class instances.
+
+```typescript src/user/User.ts
+import { AggregateRoot } from "@abejarano/ts-mongodb-criteria";
+
+export class User extends AggregateRoot {
+  constructor(
+    private readonly id: string,
+    private readonly name: string,
+    private readonly email: string,
+    private readonly status: string,
+    private readonly age: number
+  ) {
+    super();
+  }
+
+  /** Returns the document identifier used as MongoDB's _id. */
+  getId(): string {
+    return this.id;
+  }
+
+  /** Serializes the aggregate to a plain object for persistence. */
+  toPrimitives(): Record<string, unknown> {
+    return {
+      id: this.id,
+      name: this.name,
+      email: this.email,
+      status: this.status,
+      age: this.age,
+    };
+  }
+
+  /** Deserializes a plain MongoDB document back into a User instance. */
+  static override fromPrimitives(data: any): User {
+    return new User(
+      data.id,
+      data.name,
+      data.email,
+      data.status,
+      data.age
+    );
+  }
+
+  // Domain getters
+  getName(): string  { return this.name; }
+  getEmail(): string { return this.email; }
+  getStatus(): string { return this.status; }
+  getAge(): number   { return this.age; }
+}
+```
+
+### Create a UserRepository
+
+Extend `MongoRepository<User>`, implement the abstract `collectionName()` method
+to tell the library which MongoDB collection to target, and implement
+`ensureIndexes()` to declare indexes. Indexes are created lazily on the first
+access — use the `collection` argument inside `ensureIndexes` directly to avoid
+triggering a recursive call.
+
+```typescript src/user/UserRepository.ts
+import { Collection } from "mongodb";
+import { MongoRepository } from "@abejarano/ts-mongodb-criteria";
+import { User } from "./User";
+
+export class UserRepository extends MongoRepository<User> {
+  constructor() {
+    // Pass the class itself so the base repository can call fromPrimitives.
+    super(User);
+  }
+
+  /** MongoDB collection name for this repository. */
+  collectionName(): string {
+    return "users";
+  }
+
+  /**
+   * Called once per process lifetime the first time the collection is accessed.
+   * Use the `collection` argument here — do NOT call this.collection() to avoid
+   * infinite recursion.
+   */
+  protected async ensureIndexes(collection: Collection): Promise<void> {
+    await collection.createIndex({ email: 1 }, { unique: true });
+    await collection.createIndex({ status: 1 });
+  }
+}
+```
+
+`MongoRepository` provides the following ready-to-use public methods:
+
+| Method | Description |
+|---|---|
+| `list(criteria, fieldsToExclude?, tx?)` | Paginated query returning `Paginate<T>` |
+| `one(filter, tx?)` | Fetch a single matching document |
+| `many(filter, tx?)` | Fetch all matching documents |
+| `upsert(entity, tx?)` | Insert or update an aggregate by its id |
+| `delete(filter, options?, tx?)` | Delete matching documents |
+
+### Build a Criteria query
+
+A `Criteria` is composed of a `Filters` set, an `Order`, an optional limit, and
+an optional page number. Use `Filters.fromValues` with an array of `Map`
+objects — each map requires the keys `"field"`, `"operator"`, and `"value"`.
+
+```typescript src/user/listActiveAdults.ts
+import {
+  Criteria,
+  Filters,
+  Order,
+  Operator,
+} from "@abejarano/ts-mongodb-criteria";
+
+// Find active users aged 18 or over, newest first, 20 per page
+export const activeAdultsCriteria = new Criteria(
+  Filters.fromValues([
+    new Map([
+      ["field",    "status"],
+      ["operator", Operator.EQUAL],
+      ["value",    "active"],
+    ]),
+    new Map([
+      ["field",    "age"],
+      ["operator", Operator.GTE],
+      ["value",    "18"],
+    ]),
+  ]),
+  Order.desc("createdAt"),
+  20, // limit — number of results per page
+  1   // page  — 1-based page number
+);
+```
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+  To fetch **all** documents in a collection without any filter conditions use
+  `Filters.none()`:
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  ```typescript
+  const allUsersCriteria = new Criteria(Filters.none(), Order.asc("name"));
+  ```
 </Tip>
+
+Available `Operator` values:
+
+| Operator | MongoDB equivalent | Notes |
+|---|---|---|
+| `EQUAL` | `$eq` | Exact match |
+| `NOT_EQUAL` | `$ne` | Exclusion |
+| `GT` / `GTE` | `$gt` / `$gte` | Numeric/date ranges |
+| `LT` / `LTE` | `$lt` / `$lte` | Numeric/date ranges |
+| `CONTAINS` | `$regex` | Case-sensitive substring |
+| `NOT_CONTAINS` | `$not: $regex` | Substring exclusion |
+| `BETWEEN` | `$gte` + `$lte` | Inclusive range using `{ start, end }` |
+| `OR` | `$or` | Multi-field OR using `OrCondition[]` |
+| `IN` | `$in` | Match any value in an array |
+| `NOT_IN` | `$nin` | Exclude any value in an array |
+
+### Execute the query and read the result
+
+```typescript src/user/main.ts
+import "dotenv/config"; // load MONGO_URI before the first import
+import { UserRepository } from "./UserRepository";
+import { activeAdultsCriteria } from "./listActiveAdults";
+import type { Paginate } from "@abejarano/ts-mongodb-criteria";
+import type { User } from "./User";
+
+async function main() {
+  const repo = new UserRepository();
+
+  // list() returns Paginate<User>
+  const page: Paginate<User> = await repo.list(activeAdultsCriteria);
+
+  console.log(`Total matching users : ${page.count}`);
+  console.log(`Results on this page : ${page.results.length}`);
+  console.log(`Next page number     : ${page.nextPag ?? "none"}`);
+
+  for (const user of page.results) {
+    console.log(`  ${user.getName()} <${user.getEmail()}>`);
+  }
+}
+
+main().catch(console.error);
+```
+
+The `Paginate<T>` shape returned by `list()`:
+
+```typescript
+type Paginate<T> = {
+  nextPag: string | number | null; // next page number, or null on the last page
+  count:   number;                 // total documents matching the filter
+  results: Array<T>;               // hydrated entities for this page
+};
+```
+
+</Steps>
+
+## What's Next
+
+- **Transactions** — wrap multiple `upsert` / `delete` calls in
+  `MongoTransaction.run` so they commit or roll back together.
+- **OR operator** — search across several fields in one filter using
+  `Operator.OR` and an `OrCondition[]` value.
+- **Field exclusion** — pass an array of field names as the second argument to
+  `list()` to strip sensitive or large fields from the projection.
+- **IRepository interface** — extend `IRepository<T>` in your own interfaces to
+  keep method signatures in sync with the library's base class.

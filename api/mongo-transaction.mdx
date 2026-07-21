@@ -1,0 +1,176 @@
+---
+title: "MongoTransaction — ts-mongo-criteria API Reference"
+sidebarTitle: "MongoTransaction"
+description: "MongoTransaction.run() wraps repository operations in a MongoDB client session, committing on success and rolling back on any error."
+---
+
+`MongoTransaction` gives you multi-document, multi-collection ACID transactions with a simple callback API. Pass an async function to `MongoTransaction.run()`, perform any number of repository operations inside it using the provided `transaction` context, and the library handles commit, rollback, and session cleanup for you.
+
+---
+
+## `MongoTransaction.run(callback)`
+
+The sole entry-point for starting a transaction. It:
+
+1. Obtains a `MongoClient` via `MongoClientFactory.createClient()`.
+2. Opens a new `ClientSession` with `client.startSession()`.
+3. Wraps the callback in `session.withTransaction()`, which handles retrying on transient errors and committing on success.
+4. Calls `session.endSession()` in a `finally` block regardless of outcome.
+5. Returns the value resolved by `callback`, or rethrows any error the callback raises.
+
+**Signature**
+
+```typescript
+public static async run<T>(
+  callback: (transaction: MongoTransaction) => Promise<T>
+): Promise<T>
+```
+
+**Parameters**
+
+<ParamField path="callback" type="(transaction: MongoTransaction) => Promise<T>" required>
+  An async function that receives the opaque `MongoTransaction` context. Pass this context to every repository method that should participate in the transaction. The callback's return value becomes the return value of `run()`.
+</ParamField>
+
+**Returns** `Promise<T>` — whatever value `callback` resolves to.
+
+**On success** — `session.withTransaction` commits the transaction and `endSession` releases the server session back to the pool.
+
+**On error** — any exception thrown inside `callback` causes `session.withTransaction` to abort the transaction. The exception is rethrown from `run()` so the caller can handle it.
+
+---
+
+## `MongoTransaction.sessionFor(transaction?)` <span style={{color:"#888", fontSize:"0.8em"}}>@internal</span>
+
+Used internally by every `MongoRepository` method that accepts a `transaction?` parameter. It extracts the driver `ClientSession` stored in the `MongoTransaction` instance (via a `WeakMap`) and forwards it to the native driver call.
+
+**Signature**
+
+```typescript
+/** @internal */
+public static sessionFor(
+  transaction?: MongoTransaction
+): ClientSession | undefined
+```
+
+Returns `undefined` when `transaction` is `undefined`, which causes repository methods to run outside any session (auto-commit mode).
+
+You will not normally call `sessionFor` yourself — it is exposed as `public` so that custom repository implementations and third-party extensions can forward sessions to driver operations they build directly.
+
+---
+
+## Transactional repository methods
+
+All methods on `MongoRepository` that mutate or read data accept an optional `transaction` parameter. When a `MongoTransaction` is passed the underlying driver call is bound to that session:
+
+| Method | Driver operation wrapped |
+|--------|--------------------------|
+| `one(filter, transaction?)` | `collection.findOne(…, { session })` |
+| `many(filter, transaction?)` | `collection.find(…, { session })` |
+| `list(criteria, fields?, transaction?)` | `collection.find(…, { session })` + `countDocuments(…, { session })` |
+| `upsert(entity, transaction?)` | `collection.updateOne(…, { upsert: true, session })` |
+| `delete(filter, options?, transaction?)` | `collection.deleteMany(…, { session })` |
+| `updateOne(filter, update, transaction?)` *(protected)* | `collection.updateOne(…, { upsert: true, session })` |
+
+---
+
+## Full example
+
+The example below creates a new order and decrements product inventory as a single atomic operation. If either operation fails, neither change is persisted.
+
+```typescript
+import {
+  MongoTransaction,
+  IRepository,
+} from "@abejarano/ts-mongodb-criteria"
+
+async function placeOrder(
+  orders: IRepository<Order>,
+  products: IRepository<Product>,
+  newOrder: Order,
+  product: Product,
+): Promise<void> {
+  await MongoTransaction.run(async (transaction) => {
+    // 1. Persist the new order document
+    await orders.upsert(newOrder, transaction)
+
+    // 2. Decrement stock on the product
+    const current = await products.one({ _id: product.getId() }, transaction)
+    if (!current || current.stock < newOrder.quantity) {
+      throw new Error("Insufficient stock") // rolls back both operations
+    }
+    const updated = current.decrementStock(newOrder.quantity)
+    await products.upsert(updated, transaction)
+
+    // 3. Remove the reservation held during checkout
+    await reservations.delete(
+      { orderId: newOrder.getId() },
+      undefined,
+      transaction
+    )
+
+    // The value returned here is forwarded as the return value of run()
+  })
+}
+```
+
+---
+
+<Warning>
+  **MongoDB transactions require a replica set (or sharded cluster).**
+
+  Transactions are not supported on standalone `mongod` instances. For local development, start a single-node replica set:
+
+  ```bash
+  mongod --replSet rs0 --bind_ip localhost
+  # then in mongosh:
+  rs.initiate()
+  ```
+
+  Atlas clusters and most managed MongoDB services already run as replica sets.
+</Warning>
+
+---
+
+## Nesting restriction
+
+Do **not** call `MongoTransaction.run()` inside another `MongoTransaction.run()` callback. MongoDB does not support nested transactions — the inner `run()` would call `client.startSession()` a second time, creating an independent session rather than inheriting the outer transaction:
+
+```typescript
+// ❌ INCORRECT — inner run() is a separate, independent transaction
+await MongoTransaction.run(async (outer) => {
+  await ordersRepo.upsert(order, outer)
+
+  await MongoTransaction.run(async (inner) => {  // ← do not do this
+    await inventoryRepo.upsert(product, inner)
+  })
+})
+
+// ✅ CORRECT — pass the same transaction context to all operations
+await MongoTransaction.run(async (tx) => {
+  await ordersRepo.upsert(order, tx)
+  await inventoryRepo.upsert(product, tx)
+})
+```
+
+---
+
+## Error propagation
+
+Any exception thrown inside the `run()` callback — whether from your application code or from a repository method — immediately aborts the transaction:
+
+```typescript
+try {
+  await MongoTransaction.run(async (tx) => {
+    await accountsRepo.upsert(debitAccount, tx)
+
+    // This throws → transaction is aborted, debit is rolled back
+    throw new Error("Something went wrong")
+  })
+} catch (err) {
+  // err is the original error, re-thrown by run()
+  console.error("Transaction aborted:", err)
+}
+```
+
+The session is always ended in the `finally` block, so no resources are leaked even when an error is thrown.

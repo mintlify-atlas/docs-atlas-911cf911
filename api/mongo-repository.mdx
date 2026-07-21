@@ -1,0 +1,366 @@
+---
+title: "MongoRepository — ts-mongo-criteria API Reference"
+sidebarTitle: "MongoRepository"
+description: "MongoRepository is the abstract base class providing one, many, list, upsert, and delete operations. Extend it with collectionName() and ensureIndexes() to create a typed repository."
+---
+
+`MongoRepository<T>` is the abstract base class at the heart of `@abejarano/ts-mongodb-criteria`. It wires together `MongoCriteriaConverter`, `MongoClientFactory`, and `MongoTransaction` so that every concrete repository you write automatically gets paginated listing, criteria-based filtering, upsert-by-ID persistence, and optional transactional support with zero boilerplate.
+
+## Class overview
+
+```typescript
+import { MongoRepository } from "@abejarano/ts-mongodb-criteria"
+
+abstract class MongoRepository<T extends AggregateRoot> {
+  protected constructor(aggregateRootClass: AggregateRootClass<T>)
+
+  // --- you must implement these two ---
+  abstract collectionName(): string
+  protected abstract ensureIndexes(collection: Collection): Promise<void>
+
+  // --- public data access ---
+  public async one(filter: object, transaction?: MongoTransaction): Promise<T | null>
+  public async many(filter: object, transaction?: MongoTransaction): Promise<T[]>
+  public async list<D>(criteria: Criteria, fieldsToExclude?: string[], transaction?: MongoTransaction): Promise<Paginate<D>>
+  public async upsert(entity: T, transaction?: MongoTransaction): Promise<void>
+  public async delete(filter: object, options?: DeleteOptions, transaction?: MongoTransaction): Promise<void>
+
+  // --- protected helpers ---
+  protected async collection<U extends Document>(): Promise<Collection<U>>
+  protected async updateOne(filter: object, update: Document[] | UpdateFilter<any>, transaction?: MongoTransaction): Promise<void>
+}
+```
+
+The generic parameter `T` must extend `AggregateRoot`. The constructor receives an `AggregateRootClass<T>` — the class reference (not an instance) — so the repository can call `T.fromPrimitives()` when hydrating documents retrieved from MongoDB.
+
+---
+
+## Abstract methods
+
+These two methods must be implemented in every concrete repository subclass.
+
+### `collectionName(): string`
+
+Returns the name of the MongoDB collection this repository manages.
+
+```typescript
+collectionName(): string {
+  return "users"
+}
+```
+
+The value is also used as the key in the static [index registry](#index-registry) to ensure `ensureIndexes` runs only once per collection per process.
+
+### `ensureIndexes(collection: Collection): Promise<void>`
+
+Called once per process (guarded by the index registry) the first time the collection is accessed. Use it to declare any indexes your queries rely on.
+
+```typescript
+protected async ensureIndexes(collection: Collection): Promise<void> {
+  await collection.createIndex({ email: 1 }, { unique: true })
+  await collection.createIndex({ createdAt: -1 })
+}
+```
+
+Receives the raw `Collection` from the MongoDB driver so that all native `createIndex` options are available.
+
+---
+
+## Public methods
+
+### `one`
+
+Finds the first document matching `filter` and returns it hydrated as `T`, or `null` when no document matches.
+
+<ParamField path="filter" type="object" required>
+  A MongoDB query filter object (plain POJO). For example `{ email: "alice@example.com" }`.
+</ParamField>
+
+<ParamField path="transaction" type="MongoTransaction">
+  An optional transaction context obtained from `MongoTransaction.run()`. When provided the underlying `findOne` is bound to that session.
+</ParamField>
+
+**Returns** `Promise<T | null>`
+
+```typescript
+const user = await userRepository.one({ email: "alice@example.com" })
+if (user) {
+  console.log(user.getId())
+}
+```
+
+The `_id` field is automatically mapped to `id` (as a string) when calling `fromPrimitives`.
+
+---
+
+### `many`
+
+Finds **all** documents matching `filter` and returns them as an array of hydrated `T` instances.
+
+<ParamField path="filter" type="object" required>
+  A MongoDB query filter object. Returns all documents in the collection when passed an empty object `{}`.
+</ParamField>
+
+<ParamField path="transaction" type="MongoTransaction">
+  Optional transaction context. The underlying cursor is opened with the associated session when provided.
+</ParamField>
+
+**Returns** `Promise<T[]>`
+
+```typescript
+const activeUsers = await userRepository.many({ status: "active" })
+console.log(activeUsers.length)
+```
+
+---
+
+### `list`
+
+Converts a `Criteria` object into a MongoDB query (via `MongoCriteriaConverter`) and returns a paginated `Paginate<D>` result.
+
+<ParamField path="criteria" type="Criteria" required>
+  Encapsulates filters, sort order, page number, and page size. Build one with `new Criteria(filters, order, limit, page)`.
+</ParamField>
+
+<ParamField path="fieldsToExclude" type="string[]">
+  Field names to remove from each returned document via a MongoDB projection. Defaults to `[]` (no projection). `_id` is always excluded from the mapped result regardless of this parameter.
+</ParamField>
+
+<ParamField path="transaction" type="MongoTransaction">
+  Optional transaction context applied to both the cursor and the subsequent `countDocuments` call.
+</ParamField>
+
+**Returns** `Promise<Paginate<D>>`
+
+```typescript
+type UserDTO = { id: string; name: string; status: string }
+
+const criteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "status"], ["operator", "="], ["value", "active"]]),
+  ]),
+  Order.fromValues("createdAt", "DESC"),
+  10, // page size
+  1   // page number
+)
+
+const page = await userRepository.list<UserDTO>(criteria, ["password"])
+// page.results  → UserDTO[]
+// page.count    → total matching documents
+// page.nextPag  → next page number or null
+```
+
+---
+
+### `upsert`
+
+Persists an entity to MongoDB. If a document with the same `_id` already exists it is updated; otherwise a new document is inserted. The entity's `toPrimitives()` result is spread into a `$set` operation.
+
+<ParamField path="entity" type="T" required>
+  The aggregate root instance to persist. `entity.getId()` must return a valid 24-character hex ObjectId string.
+</ParamField>
+
+<ParamField path="transaction" type="MongoTransaction">
+  Optional transaction context. The underlying `updateOne` is bound to the session when provided.
+</ParamField>
+
+**Returns** `Promise<void>`
+
+```typescript
+const user = new User("507f1f77bcf86cd799439011", "Alice", "alice@example.com")
+await userRepository.upsert(user)
+```
+
+`toPrimitives()` may return a plain object or a `Promise` that resolves to one — both forms are handled.
+
+---
+
+### `delete`
+
+Deletes all documents matching `filter` using the MongoDB driver's `deleteMany`.
+
+<ParamField path="filter" type="object" required>
+  A MongoDB query filter. All matching documents are removed.
+</ParamField>
+
+<ParamField path="options" type="DeleteOptions">
+  Optional native MongoDB `DeleteOptions` (e.g. `{ comment: "…" }`). Merged with the session when a transaction is active.
+</ParamField>
+
+<ParamField path="transaction" type="MongoTransaction">
+  Optional transaction context.
+</ParamField>
+
+**Returns** `Promise<void>`
+
+```typescript
+await userRepository.delete({ status: "inactive" })
+```
+
+---
+
+## Protected helpers
+
+These methods are available inside subclass implementations but are not part of the public `IRepository` contract.
+
+### `collection<U>()`
+
+Returns the raw MongoDB `Collection<U>` for the current repository. Automatically triggers `ensureIndexesOnce()` on the first call so that indexes are always present before any query runs.
+
+**Returns** `Promise<Collection<U>>`
+
+Use this inside custom query methods that go beyond what `one` / `many` / `list` provide:
+
+```typescript
+protected async countByStatus(status: string): Promise<number> {
+  const col = await this.collection<UserDocument>()
+  return col.countDocuments({ status })
+}
+```
+
+---
+
+### `updateOne`
+
+Runs a native MongoDB `updateOne` with `{ upsert: true }` on the collection. Useful when you need fine-grained control (e.g. `$push`, `$inc`) that `upsert` does not expose.
+
+<ParamField path="filter" type="object" required>
+  The filter identifying the target document.
+</ParamField>
+
+<ParamField path="update" type="Document[] | UpdateFilter<any>" required>
+  An update document (e.g. `{ $set: { … } }`) or an aggregation pipeline array.
+</ParamField>
+
+<ParamField path="transaction" type="MongoTransaction">
+  Optional transaction context.
+</ParamField>
+
+**Returns** `Promise<void>`
+
+```typescript
+protected async incrementLoginCount(userId: string): Promise<void> {
+  await this.updateOne(
+    { _id: new ObjectId(userId) },
+    { $inc: { loginCount: 1 } }
+  )
+}
+```
+
+---
+
+## `IRepository<T>` interface
+
+`MongoRepository<T>` satisfies the `IRepository<T>` interface exported by the library. Use it to declare dependency types so that application code is decoupled from the concrete repository class and can be unit-tested with mocks.
+
+```typescript
+import { IRepository } from "@abejarano/ts-mongodb-criteria"
+
+// application service
+class RegisterUserService {
+  constructor(private readonly users: IRepository<User>) {}
+
+  async execute(command: RegisterUserCommand): Promise<void> {
+    const exists = await this.users.one({ email: command.email })
+    if (exists) throw new Error("Email already taken")
+
+    const user = User.create(command.id, command.name, command.email)
+    await this.users.upsert(user)
+  }
+}
+```
+
+The full interface definition:
+
+```typescript
+interface IRepository<T extends AggregateRoot> {
+  many(filter: object, transaction?: MongoTransaction): Promise<T[]>
+  one(filter: object, transaction?: MongoTransaction): Promise<T | null>
+  list<D>(criteria: Criteria, fieldsToExclude?: string[], transaction?: MongoTransaction): Promise<Paginate<D>>
+  upsert(entity: T, transaction?: MongoTransaction): Promise<void>
+  delete(filter: object, options?: DeleteOptions, transaction?: MongoTransaction): Promise<void>
+}
+```
+
+---
+
+## Index registry
+
+`MongoRepository` maintains a process-wide `static indexRegistry = new Set<string>()`. When `collection()` is called, it invokes `ensureIndexesOnce()`, which:
+
+1. Looks up `collectionName()` in the set.
+2. If absent, calls your `ensureIndexes(collection)` implementation and adds the name to the set.
+3. If already present, skips the call entirely.
+
+This guarantees that index creation only happens once per collection per Node.js process regardless of how many requests are served or how many instances of your repository class are created. On cold starts (e.g. serverless functions) the registry is empty, so indexes are always verified at least once per runtime lifetime.
+
+---
+
+## Full example
+
+```typescript
+import {
+  AggregateRoot,
+  MongoRepository,
+  IRepository,
+  Criteria,
+  Filters,
+  Order,
+  Operator,
+  OrderTypes,
+  Paginate,
+} from "@abejarano/ts-mongodb-criteria"
+import { Collection, ObjectId } from "mongodb"
+
+// 1. Domain entity
+class User extends AggregateRoot {
+  constructor(
+    private readonly _id: string,
+    public readonly name: string,
+    public readonly email: string,
+    public readonly status: "active" | "inactive"
+  ) {
+    super()
+  }
+
+  getId(): string { return this._id }
+
+  toPrimitives() {
+    return { name: this.name, email: this.email, status: this.status }
+  }
+
+  static override fromPrimitives(data: any): User {
+    return new User(data.id, data.name, data.email, data.status)
+  }
+}
+
+// 2. Repository implementation
+class UserRepository extends MongoRepository<User> implements IRepository<User> {
+  constructor() { super(User) }
+
+  collectionName(): string { return "users" }
+
+  protected async ensureIndexes(collection: Collection): Promise<void> {
+    await collection.createIndex({ email: 1 }, { unique: true })
+    await collection.createIndex({ status: 1, createdAt: -1 })
+  }
+}
+
+// 3. Usage
+const repo = new UserRepository()
+
+// Paginated list — active users, page 2, 20 per page
+type UserDTO = { id: string; name: string; email: string }
+
+const criteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", "active"]]),
+  ]),
+  Order.fromValues("createdAt", OrderTypes.DESC),
+  20, // limit
+  2   // page
+)
+
+const page: Paginate<UserDTO> = await repo.list<UserDTO>(criteria, ["status"])
+console.log(page.count, page.nextPag, page.results)
+```

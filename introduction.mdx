@@ -1,0 +1,127 @@
+---
+title: "ts-mongo-criteria: Type-Safe MongoDB Query Builder"
+sidebarTitle: "Introduction"
+description: "ts-mongo-criteria implements the Criteria Pattern for MongoDB in TypeScript, enabling type-safe, composable query construction for DDD and Clean Architecture projects."
+---
+
+`@abejarano/ts-mongodb-criteria` brings the **Criteria Pattern** to MongoDB in TypeScript. Instead of writing raw query objects scattered across your codebase, you compose structured `Criteria` instances that encapsulate filter conditions, sort order, and pagination in a single, reusable object. The result is expressive, testable database logic that fits naturally into Domain-Driven Design (DDD) and Clean Architecture applications — from small Node.js services to large enterprise monorepos.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Type-Safe Criteria" icon="shield-check" href="/quickstart">
+    Every filter, operator, and sort direction is fully typed. TypeScript catches
+    invalid query structures at compile time, long before they reach your
+    database.
+  </Card>
+  <Card title="12 Filter Operators" icon="filter" href="/quickstart">
+    `EQUAL`, `NOT_EQUAL`, `GT`, `GTE`, `LT`, `LTE`, `CONTAINS`, `NOT_CONTAINS`,
+    `BETWEEN`, `OR`, `IN`, and `NOT_IN` — covering the full range of MongoDB
+    query patterns.
+  </Card>
+  <Card title="MongoRepository Base" icon="database" href="/quickstart">
+    Extend `MongoRepository<T>` to get `list`, `one`, `many`, `upsert`, and
+    `delete` out of the box. Declare your collection name and indexes — nothing
+    else required.
+  </Card>
+  <Card title="Atomic Transactions" icon="arrows-rotate" href="/quickstart">
+    `MongoTransaction.run` wraps multiple repository writes in a single MongoDB
+    transaction. One failure rolls back every write in the callback
+    automatically.
+  </Card>
+  <Card title="DDD Primitives" icon="cubes" href="/quickstart">
+    `AggregateRoot`, `IRepository<T>`, `Paginate<T>`, and value-object base
+    classes (`StringValueObject`, `EnumValueObject`) give your domain model a
+    clean, framework-agnostic foundation.
+  </Card>
+  <Card title="CLI Migrations" icon="terminal" href="/quickstart">
+    The bundled `ts-mongo` CLI wraps `migrate-mongo` so you can create, run, and
+    roll back database migrations with a single command — no extra config files
+    needed.
+  </Card>
+</CardGroup>
+
+## Why the Criteria Pattern?
+
+Raw MongoDB query objects are quick to write, but they scatter query logic across controllers, services, and repositories. As an application grows, the same filter conditions are duplicated in multiple places and tested indirectly — or not at all.
+
+The Criteria Pattern solves this by making queries **first-class objects**. A `Criteria` instance carries its own filters, sort order, and pagination. It can be built once in a use-case layer, passed down to any repository, and unit-tested in isolation.
+
+<CodeGroup>
+```typescript Before (raw MongoDB object)
+// ❌ Query logic is inline, opaque, and hard to reuse
+const users = await db.collection("users").find({
+  status: { $eq: "active" },
+  age: { $gte: 18 },
+}).sort({ createdAt: -1 }).skip(0).limit(20).toArray();
+
+// Pagination, count, and next-page logic must be
+// reimplemented every time.
+const count = await db.collection("users").countDocuments({
+  status: { $eq: "active" },
+  age: { $gte: 18 },
+});
+```
+
+```typescript After (Criteria approach)
+// ✅ Query logic is a named, composable object
+import {
+  Criteria,
+  Filters,
+  Order,
+  Operator,
+} from "@abejarano/ts-mongodb-criteria";
+
+const activeAdultsCriteria = new Criteria(
+  Filters.fromValues([
+    new Map([
+      ["field", "status"],
+      ["operator", Operator.EQUAL],
+      ["value", "active"],
+    ]),
+    new Map([
+      ["field", "age"],
+      ["operator", Operator.GTE],
+      ["value", "18"],
+    ]),
+  ]),
+  Order.desc("createdAt"),
+  20, // limit
+  1   // page
+);
+
+// Reuse anywhere; pagination + count handled automatically
+const { results, count, nextPag } =
+  await userRepository.list(activeAdultsCriteria);
+```
+</CodeGroup>
+
+<Note>
+  The `Criteria` object is completely decoupled from the MongoDB driver. You can
+  create and test it without a live database connection, then hand it to any
+  `MongoRepository` implementation when it is time to execute.
+</Note>
+
+## Requirements
+
+| Dependency | Minimum version |
+|---|---|
+| **Node.js** | 20.0.0 |
+| **MongoDB** | 6.0.0 |
+| **TypeScript** | 5.0.0 |
+
+The library ships dual CJS and ESM builds and has no runtime dependencies beyond
+the `mongodb` peer dependency and the bundled `migrate-mongo` CLI dependency.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install the package, define an entity, and run your first paginated query in
+    under five minutes.
+  </Card>
+  <Card title="Installation" icon="box" href="/installation">
+    Full install instructions, environment variable reference, and TypeScript
+    configuration options.
+  </Card>
+</CardGroup>

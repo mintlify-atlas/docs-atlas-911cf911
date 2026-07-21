@@ -1,0 +1,253 @@
+---
+title: "Build a MongoDB Repository with ts-mongo-criteria"
+sidebarTitle: "Repository Setup"
+description: "Extend MongoRepository to create a typed collection repository with lazy index creation, criteria-based listing, upsert, delete, and raw filter queries."
+---
+
+The `MongoRepository` abstract class is the heart of `@abejarano/ts-mongodb-criteria`. It wires your domain entity to a MongoDB collection and exposes typed methods for every common data-access operation — no raw driver boilerplate required. This guide walks you through every step, from defining your entity to calling each method in production code.
+
+<Steps>
+
+  <Step title="Define the domain entity">
+    Every repository is typed to a single entity that extends `AggregateRoot`. You must implement three members: `getId()`, `toPrimitives()`, and the static `fromPrimitives()` factory.
+
+    ```typescript
+    import { AggregateRoot } from "@abejarano/ts-mongodb-criteria";
+
+    export class User extends AggregateRoot {
+      constructor(
+        private readonly id: string,
+        private readonly name: string,
+        private readonly email: string,
+        private readonly status: "active" | "inactive",
+        private readonly age: number
+      ) {
+        super();
+      }
+
+      /** Returns the unique identifier used as the document _id. */
+      getId(): string {
+        return this.id;
+      }
+
+      /** Serialises the entity to a plain object for persistence. */
+      toPrimitives(): Record<string, unknown> {
+        return {
+          id: this.id,
+          name: this.name,
+          email: this.email,
+          status: this.status,
+          age: this.age,
+        };
+      }
+
+      /** Rehydrates an entity from a raw MongoDB document. */
+      static override fromPrimitives(data: Record<string, unknown>): User {
+        return new User(
+          data.id as string,
+          data.name as string,
+          data.email as string,
+          data.status as "active" | "inactive",
+          data.age as number
+        );
+      }
+
+      // Accessors
+      getName(): string { return this.name; }
+      getEmail(): string { return this.email; }
+      getStatus(): string { return this.status; }
+      getAge(): number { return this.age; }
+    }
+    ```
+  </Step>
+
+  <Step title="Create the repository class">
+    Extend `MongoRepository<T>` and implement the two abstract members: `collectionName()` and `ensureIndexes(collection)`. Pass your entity class (not an instance) to `super()`.
+
+    ```typescript
+    import { Collection } from "mongodb";
+    import {
+      MongoRepository,
+      IRepository,
+    } from "@abejarano/ts-mongodb-criteria";
+    import { User } from "./User";
+
+    export class UserRepository
+      extends MongoRepository<User>
+      implements IRepository<User>
+    {
+      constructor() {
+        super(User);
+      }
+
+      /** The MongoDB collection name this repository manages. */
+      collectionName(): string {
+        return "users";
+      }
+
+      /**
+       * Called once per process lifetime the first time the collection is
+       * accessed. Use the `collection` argument — do NOT call
+       * `this.collection()` here (that would trigger recursion).
+       */
+      protected async ensureIndexes(collection: Collection): Promise<void> {
+        await collection.createIndex({ email: 1 }, { unique: true });
+        await collection.createIndex({ status: 1, createdAt: -1 });
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Query with list(criteria)">
+    `list()` converts a `Criteria` object into a MongoDB find operation and returns a `Paginate<D>` result that includes the matched documents and the total count.
+
+    ```typescript
+    import {
+      Criteria,
+      Filters,
+      Order,
+      Operator,
+    } from "@abejarano/ts-mongodb-criteria";
+
+    const repo = new UserRepository();
+
+    // Find active users aged 18+, newest first, page 1 (20 per page)
+    const criteria = new Criteria(
+      Filters.fromValues([
+        new Map([
+          ["field", "status"],
+          ["operator", Operator.EQUAL],
+          ["value", "active"],
+        ]),
+        new Map([
+          ["field", "age"],
+          ["operator", Operator.GTE],
+          ["value", "18"],
+        ]),
+      ]),
+      Order.desc("createdAt"),
+      20, // limit
+      1   // page
+    );
+
+    const result = await repo.list<User>(criteria);
+    console.log(`Page 1 of ${Math.ceil(result.count / 20)}`);
+    console.log(result.results); // User[]
+    ```
+  </Step>
+
+  <Step title="Fetch a single document with one(filter)">
+    `one()` accepts a plain MongoDB filter object and returns the first matching entity as `T | null`. Use it for exact-ID or unique-field lookups.
+
+    ```typescript
+    const user = await repo.one({ email: "alice@example.com" });
+
+    if (user === null) {
+      throw new Error("User not found");
+    }
+
+    console.log(user.getName());
+    ```
+  </Step>
+
+  <Step title="Fetch multiple documents with many(filter)">
+    `many()` accepts the same plain filter object but returns all matching documents as `T[]`. Useful when you need a small, bounded result set without pagination.
+
+    ```typescript
+    // All active users without pagination overhead
+    const activeUsers: User[] = await repo.many({ status: "active" });
+
+    console.log(`${activeUsers.length} active users`);
+    ```
+  </Step>
+
+  <Step title="Persist or update with upsert(entity)">
+    `upsert()` performs an insert-or-replace based on the document's `id` field. Call it identically for both new and existing entities — the library handles the underlying `replaceOne` with `upsert: true`.
+
+    ```typescript
+    import { randomUUID } from "crypto";
+
+    const newUser = new User(
+      randomUUID(),
+      "Bob Smith",
+      "bob@example.com",
+      "active",
+      30
+    );
+
+    await repo.upsert(newUser);
+    ```
+  </Step>
+
+  <Step title="Remove documents with delete(filter)">
+    `delete()` forwards a plain filter object (plus optional MongoDB `DeleteOptions`) directly to the driver's `deleteMany`.
+
+    ```typescript
+    import { DeleteOptions } from "mongodb";
+
+    // Hard-delete all inactive users
+    const options: DeleteOptions = {};
+    await repo.delete({ status: "inactive" }, options);
+    ```
+  </Step>
+
+</Steps>
+
+## Excluding fields from list() results
+
+Pass an array of field names as the second argument to `list()` to strip them from every returned document. This is handy for omitting large or sensitive properties that are stored in MongoDB but not needed by the caller.
+
+```typescript
+// Never return the password hash or internal version key
+const result = await repo.list<User>(criteria, ["password", "__v"]);
+```
+
+The exclusion is applied as a MongoDB projection, so the data is never transferred from the database server.
+
+## Declaring a repository interface with IRepository\<T\>
+
+`IRepository<T>` is the canonical interface for the five standard data-access methods. Extend it in your own application interfaces so that your use-case layer only depends on the interface, not the concrete `MongoRepository` class.
+
+```typescript
+import type { IRepository } from "@abejarano/ts-mongodb-criteria";
+import { User } from "./User";
+
+/** Application-level interface for the User repository. */
+export interface IUserRepository extends IRepository<User> {
+  // Add domain-specific query methods here, e.g.:
+  findByEmail(email: string): Promise<User | null>;
+}
+```
+
+Then make the concrete class implement it:
+
+```typescript
+export class UserRepository
+  extends MongoRepository<User>
+  implements IUserRepository
+{
+  // ... collectionName, ensureIndexes, list, one, many, upsert, delete
+  // are all inherited from MongoRepository
+
+  async findByEmail(email: string): Promise<User | null> {
+    return this.one({ email });
+  }
+}
+```
+
+Your use cases can now be unit-tested against `IUserRepository` without touching MongoDB.
+
+<Note>
+  Indexes are created **lazily** — `ensureIndexes` runs exactly once per process
+  lifetime, the first time any repository method accesses the collection. There
+  is no startup cost if the repository is never used in a given request. Index
+  creation is idempotent: if the index already exists MongoDB will skip it
+  silently.
+</Note>
+
+<Warning>
+  Never call `this.collection()` inside `ensureIndexes`. `this.collection()` is
+  the method that triggers index creation, so calling it recursively from within
+  `ensureIndexes` will produce an infinite loop. Always use the `collection`
+  argument that is passed directly into the method.
+</Warning>

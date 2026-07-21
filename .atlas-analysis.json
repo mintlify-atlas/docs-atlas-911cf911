@@ -1,0 +1,111 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "ts-mongo-criteria",
+  "projectDescription": "A type-safe TypeScript library implementing the Criteria Pattern for building and executing dynamic MongoDB queries following DDD and Clean Architecture principles.",
+  "theme": "luma",
+  "primaryColor": "#040404",
+  "lightColor": "#347cc4",
+  "darkColor": "#94bce4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/criteria-pattern",
+              "concepts/filters-and-operators",
+              "concepts/ordering-and-pagination",
+              "concepts/aggregate-root"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/repository-setup",
+              "guides/transactions",
+              "guides/performance",
+              "guides/migration",
+              "guides/db-migrations"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Criteria",
+            "pages": [
+              "api/criteria",
+              "api/filters",
+              "api/filter",
+              "api/filter-operators",
+              "api/order"
+            ]
+          },
+          {
+            "group": "MongoDB",
+            "pages": [
+              "api/mongo-repository",
+              "api/mongo-criteria-converter",
+              "api/mongo-client-factory",
+              "api/mongo-transaction"
+            ]
+          },
+          {
+            "group": "Value Objects",
+            "pages": [
+              "api/value-objects"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Type-safe Criteria Pattern for dynamic MongoDB query construction",
+    "12 filter operators: EQUAL, NOT_EQUAL, GT, GTE, LT, LTE, BETWEEN, CONTAINS, NOT_CONTAINS, OR, IN, NOT_IN",
+    "Abstract MongoRepository base class with built-in pagination, upsert, delete, and criteria-based listing",
+    "MongoTransaction support for atomic multi-repository writes",
+    "Dual CJS and ESM builds with full TypeScript type declarations",
+    "Lazy index registration via ensureIndexes hook in repositories",
+    "MongoCriteriaConverter for translating Criteria objects into native MongoDB query objects",
+    "CLI wrapper (ts-mongo) for running migrate-mongo database migrations",
+    "Value object primitives: ValueObject, StringValueObject, EnumValueObject, AggregateRoot"
+  ],
+  "publicApiSurface": [
+    "Criteria",
+    "Filters",
+    "Filter",
+    "FilterField",
+    "FilterOperator",
+    "FilterValue",
+    "Order",
+    "OrderBy",
+    "OrderType",
+    "OrderTypes (enum)",
+    "Operator (enum)",
+    "Paginate<T>",
+    "MongoRepository<T>",
+    "MongoCriteriaConverter",
+    "MongoClientFactory",
+    "MongoTransaction",
+    "IRepository<T>",
+    "AggregateRoot",
+    "ValueObject<T>",
+    "StringValueObject",
+    "EnumValueObject<T>",
+    "InvalidArgumentError",
+    "ts-mongo CLI (migrate:create, migrate:up, migrate:down, migrate:status, migrate:init)"
+  ]
+}

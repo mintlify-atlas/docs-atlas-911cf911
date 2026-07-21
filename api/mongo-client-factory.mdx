@@ -1,0 +1,156 @@
+---
+title: "MongoClientFactory — ts-mongo-criteria API Reference"
+sidebarTitle: "ClientFactory"
+description: "MongoClientFactory manages a singleton MongoClient connection using the MONGO_URI environment variable, with createClient() and closeClient() lifecycle methods."
+---
+
+`MongoClientFactory` is the connection manager for `@abejarano/ts-mongodb-criteria`. It maintains a single `MongoClient` instance for the lifetime of the Node.js process, reads the connection string from the `MONGO_URI` environment variable, and exposes two static lifecycle methods: `createClient()` to get-or-create the connection, and `closeClient()` to tear it down gracefully.
+
+You do not normally call `MongoClientFactory` directly — `MongoRepository` calls it internally every time it needs the collection. However, it is part of the public API and is useful for application startup checks, graceful shutdown handlers, and testing.
+
+---
+
+## Methods
+
+### `MongoClientFactory.createClient()`
+
+Returns the existing singleton `MongoClient`, or creates and connects a new one if none exists yet.
+
+**Signature**
+
+```typescript
+static async createClient(): Promise<MongoClient>
+```
+
+**Returns** `Promise<MongoClient>` — the connected driver client.
+
+On the first call the factory:
+
+1. Reads `process.env.MONGO_URI`.
+2. Creates a `new MongoClient(uri, { ignoreUndefined: true })`.
+3. Calls `client.connect()`.
+4. Stores the result in the private static `client` field.
+
+Every subsequent call returns the already-connected instance immediately, giving you free connection pooling without any extra configuration.
+
+```typescript
+import { MongoClientFactory } from "@abejarano/ts-mongodb-criteria"
+
+const client = await MongoClientFactory.createClient()
+const db = client.db()          // uses the database from the URI
+const col = db.collection("users")
+```
+
+---
+
+### `MongoClientFactory.closeClient()`
+
+Closes the underlying `MongoClient` connection and resets the internal singleton to `null` so that the next `createClient()` call will establish a fresh connection.
+
+**Signature**
+
+```typescript
+static async closeClient(): Promise<void>
+```
+
+If no client exists (i.e. `createClient()` was never called, or `closeClient()` was already called) this method is a no-op.
+
+```typescript
+await MongoClientFactory.closeClient()
+```
+
+---
+
+## Environment variable
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MONGO_URI` | ✅ Yes | Full MongoDB connection URI read from `process.env` at connection time. |
+
+### Example `.env` values
+
+```env
+# MongoDB Atlas
+MONGO_URI=mongodb+srv://username:password@cluster0.abcde.mongodb.net/myDatabase?retryWrites=true&w=majority
+
+# Local standalone
+MONGO_URI=mongodb://localhost:27017/myDatabase
+
+# Local replica set (required for transactions)
+MONGO_URI=mongodb://localhost:27017,localhost:27018,localhost:27019/myDatabase?replicaSet=rs0
+```
+
+<Warning>
+  If `MONGO_URI` is not set when `createClient()` is called, the factory throws:
+
+  ```
+  Error: MONGO_URI environment variables are missing to connect to the MongoDB server
+  ```
+
+  Ensure the variable is present in your environment before any repository operation executes.
+</Warning>
+
+---
+
+## Singleton behavior
+
+Calling `createClient()` multiple times is safe and efficient:
+
+```typescript
+const c1 = await MongoClientFactory.createClient()
+const c2 = await MongoClientFactory.createClient()
+
+console.log(c1 === c2) // true — same instance
+```
+
+The MongoDB driver manages an internal connection pool behind the single `MongoClient` instance. You should never need to call `createClient()` more than once at application startup, but doing so has no penalty.
+
+---
+
+## `MongoClient` options
+
+The factory hard-codes `ignoreUndefined: true` when constructing the `MongoClient`:
+
+```typescript
+new MongoClient(uri, { ignoreUndefined: true })
+```
+
+This option tells the driver to silently ignore `undefined` fields in documents and query filters rather than serialising them as BSON `null`. It is the correct default for TypeScript applications that use optional fields heavily. No other driver options are set by the factory; if you need custom TLS certificates, read preferences, or pool sizing, connect your client separately and bypass `MongoClientFactory`.
+
+---
+
+## Graceful shutdown
+
+Always close the connection before your process exits to avoid open socket warnings and to allow in-flight operations to complete cleanly.
+
+```typescript
+import { MongoClientFactory } from "@abejarano/ts-mongodb-criteria"
+
+async function shutdown(signal: string): Promise<void> {
+  console.log(`Received ${signal}. Closing MongoDB connection…`)
+  await MongoClientFactory.closeClient()
+  console.log("MongoDB connection closed.")
+  process.exit(0)
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"))
+process.on("SIGINT",  () => shutdown("SIGINT"))
+```
+
+### Express / Fastify integration example
+
+```typescript
+// app bootstrap
+const app = express()
+// … register routes …
+
+const server = app.listen(3000, async () => {
+  // Warm up the connection at startup so the first request is fast
+  await MongoClientFactory.createClient()
+  console.log("Server listening on port 3000")
+})
+
+server.on("close", async () => {
+  await MongoClientFactory.closeClient()
+})
+```

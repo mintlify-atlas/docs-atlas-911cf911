@@ -1,0 +1,438 @@
+---
+title: "Migrate Existing MongoDB Queries to the Criteria Pattern"
+sidebarTitle: "Migration Guide"
+description: "Step-by-step strategies for migrating raw MongoDB queries, Mongoose queries, and SQL-style query builders to ts-mongo-criteria with zero downtime."
+---
+
+Switching to the Criteria pattern does not require a big-bang rewrite. Because `MongoRepository` sits on top of the native MongoDB driver, old query code and new Criteria-based code can coexist in the same repository class and run against the same collection simultaneously. This guide shows you how to migrate incrementally, validate correctness, and clean up legacy code without downtime.
+
+## Migration Strategies
+
+<Tabs>
+  <Tab title="Incremental (recommended)">
+    Keep every existing method untouched while you add Criteria alternatives alongside them. Update call sites one at a time, then delete the old method once nothing references it.
+
+    ```typescript
+    import {
+      Criteria,
+      Filters,
+      Order,
+      Operator,
+      MongoRepository,
+    } from "@abejarano/ts-mongodb-criteria";
+    import { Collection } from "mongodb";
+
+    class UserRepository extends MongoRepository<User> {
+      constructor() { super(User); }
+      collectionName() { return "users"; }
+      protected async ensureIndexes(c: Collection) {
+        await c.createIndex({ status: 1, createdAt: -1 });
+      }
+
+      // ── Legacy method (keep during transition) ──────────────────────────
+      /** @deprecated Use findActiveUsers() instead */
+      async findActiveUsersOld(minAge: number): Promise<User[]> {
+        // raw driver call — left in place until all callers are migrated
+        const col = await this.collection<any>();
+        return (
+          await col
+            .find({ status: "active", age: { $gte: minAge } })
+            .sort({ createdAt: -1 })
+            .limit(20)
+            .toArray()
+        ).map((d: any) => User.fromPrimitives(d));
+      }
+
+      // ── New Criteria method ─────────────────────────────────────────────
+      async findActiveUsers(minAge: number): Promise<User[]> {
+        const criteria = new Criteria(
+          Filters.fromValues([
+            new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", "active"]]),
+            new Map([["field", "age"],    ["operator", Operator.GTE],   ["value", minAge.toString()]]),
+          ]),
+          Order.desc("createdAt"),
+          20
+        );
+
+        return (await this.list<User>(criteria)).results;
+      }
+    }
+    ```
+
+    <Tip>
+      Use a feature flag (see the Testing section below) to route production traffic to the new method gradually before removing the old one.
+    </Tip>
+  </Tab>
+
+  <Tab title="Wrapper">
+    Use `MongoCriteriaConverter` to translate a `Criteria` object into a raw MongoDB filter for direct comparison with your existing queries. This is ideal for auditing equivalence without touching the production code path.
+
+    ```typescript
+    import {
+      Criteria,
+      Filters,
+      Order,
+      Operator,
+      MongoCriteriaConverter,
+    } from "@abejarano/ts-mongodb-criteria";
+
+    const criteria = new Criteria(
+      Filters.fromValues([
+        new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", "active"]]),
+        new Map([["field", "age"],    ["operator", Operator.GTE],   ["value", "18"]]),
+      ]),
+      Order.desc("createdAt"),
+      20,
+      1
+    );
+
+    const converter = new MongoCriteriaConverter();
+    const mongoQuery = converter.convert(criteria);
+
+    // mongoQuery.filter  → { status: "active", age: { $gte: 18 } }
+    // mongoQuery.sort    → { createdAt: -1 }
+    // mongoQuery.skip    → 0
+    // mongoQuery.limit   → 20
+
+    console.log("Generated filter:", JSON.stringify(mongoQuery.filter, null, 2));
+
+    // Compare with your hand-written query:
+    const legacyFilter = { status: "active", age: { $gte: 18 } };
+    console.assert(
+      JSON.stringify(mongoQuery.filter) === JSON.stringify(legacyFilter),
+      "Filters do not match — check your Criteria definition"
+    );
+    ```
+  </Tab>
+
+  <Tab title="Side-by-side">
+    Run both the old and new queries in parallel with `Promise.all` and compare their results. This gives you high confidence that the Criteria version is behaviourally identical before you switch over.
+
+    ```typescript
+    import {
+      Criteria,
+      Filters,
+      Order,
+      Operator,
+      OrCondition,
+    } from "@abejarano/ts-mongodb-criteria";
+
+    interface UserSearchRequest {
+      status?: string;
+      minAge?: number;
+      searchTerm?: string;
+      limit?: number;
+      page?: number;
+    }
+
+    class UserService {
+      constructor(private repo: UserRepository) {}
+
+      async findUsersWithValidation(req: UserSearchRequest): Promise<User[]> {
+        const [oldResults, newResults] = await Promise.all([
+          this.findUsersOldWay(req),
+          this.findUsersNewWay(req),
+        ]);
+
+        // Log any discrepancies before cutting over
+        if (oldResults.length !== newResults.length) {
+          console.warn("Result count mismatch", {
+            old: oldResults.length,
+            new: newResults.length,
+            req,
+          });
+        }
+
+        const oldIds = oldResults.map((u) => u.getId()).sort();
+        const newIds = newResults.map((u) => u.getId()).sort();
+        if (JSON.stringify(oldIds) !== JSON.stringify(newIds)) {
+          console.warn("Result ID mismatch — review Criteria definition", { req });
+        }
+
+        return newResults; // Serve the new results while still validating
+      }
+
+      private async findUsersOldWay(req: UserSearchRequest): Promise<User[]> {
+        const query: any = {};
+        if (req.status) query.status = req.status;
+        if (req.minAge) query.age = { $gte: req.minAge };
+        if (req.searchTerm) {
+          query.$or = [
+            { name:  { $regex: req.searchTerm, $options: "i" } },
+            { email: { $regex: req.searchTerm, $options: "i" } },
+          ];
+        }
+        return this.repo.many(query);
+      }
+
+      private async findUsersNewWay(req: UserSearchRequest): Promise<User[]> {
+        const maps: Array<Map<string, any>> = [];
+        if (req.status) {
+          maps.push(new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", req.status]]));
+        }
+        if (req.minAge) {
+          maps.push(new Map([["field", "age"], ["operator", Operator.GTE], ["value", req.minAge.toString()]]));
+        }
+        if (req.searchTerm) {
+          const conds: OrCondition[] = [
+            { field: "name",  operator: Operator.CONTAINS, value: req.searchTerm },
+            { field: "email", operator: Operator.CONTAINS, value: req.searchTerm },
+          ];
+          maps.push(new Map([["field", "search"], ["operator", Operator.OR], ["value", conds]]));
+        }
+        const criteria = new Criteria(
+          Filters.fromValues(maps),
+          Order.desc("createdAt"),
+          req.limit ?? 20,
+          req.page ?? 1
+        );
+        return (await this.repo.list<User>(criteria)).results;
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## From Raw MongoDB
+
+### Basic find
+
+```typescript
+// ── Before ───────────────────────────────────────────────────────────────────
+const users = await db.collection("users")
+  .find({ status: "active" })
+  .toArray();
+
+// ── After ────────────────────────────────────────────────────────────────────
+const criteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", "active"]]),
+  ]),
+  Order.none()
+);
+const { results } = await userRepo.list<User>(criteria);
+```
+
+### Date range
+
+```typescript
+// ── Before ───────────────────────────────────────────────────────────────────
+const start = new Date("2024-01-01");
+const end   = new Date("2024-01-31");
+
+const orders = await db.collection("orders")
+  .find({ createdAt: { $gte: start, $lte: end } })
+  .sort({ createdAt: -1 })
+  .toArray();
+
+// ── After ────────────────────────────────────────────────────────────────────
+const criteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "createdAt"], ["operator", Operator.GTE], ["value", start.toISOString()]]),
+    new Map([["field", "createdAt"], ["operator", Operator.LTE], ["value", end.toISOString()]]),
+  ]),
+  Order.desc("createdAt")
+);
+const { results: orders } = await orderRepo.list<Order>(criteria);
+```
+
+### $or query
+
+```typescript
+// ── Before ───────────────────────────────────────────────────────────────────
+const results = await db.collection("users").find({
+  $or: [
+    { name:  { $regex: "alice", $options: "i" } },
+    { email: { $regex: "alice", $options: "i" } },
+  ],
+}).toArray();
+
+// ── After ────────────────────────────────────────────────────────────────────
+const searchConditions: OrCondition[] = [
+  { field: "name",  operator: Operator.CONTAINS, value: "alice" },
+  { field: "email", operator: Operator.CONTAINS, value: "alice" },
+];
+
+const criteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "search"], ["operator", Operator.OR], ["value", searchConditions]]),
+  ]),
+  Order.none()
+);
+const { results } = await userRepo.list<User>(criteria);
+```
+
+## From Mongoose
+
+### .find().sort().limit().exec()
+
+```typescript
+// ── Before (Mongoose) ─────────────────────────────────────────────────────
+const users = await UserModel
+  .find({ status: "active" })
+  .sort({ createdAt: -1 })
+  .limit(20)
+  .exec();
+
+// After paginated with page number:
+const skip = (page - 1) * 20;
+const paginatedUsers = await UserModel
+  .find({ status: "active" })
+  .sort({ createdAt: -1 })
+  .skip(skip)
+  .limit(20)
+  .exec();
+
+// ── After (Criteria) ──────────────────────────────────────────────────────
+const criteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", "active"]]),
+  ]),
+  Order.desc("createdAt"),
+  20,
+  page // replaces the manual skip calculation
+);
+const { results, count } = await userRepo.list<User>(criteria);
+```
+
+### .populate() → separate queries
+
+`MongoRepository` has no population concept. Replace Mongoose `.populate()` with explicit queries and join the results in application code:
+
+```typescript
+// ── Before (Mongoose) ─────────────────────────────────────────────────────
+const orders = await OrderModel
+  .find({ userId })
+  .populate("user")
+  .sort({ createdAt: -1 })
+  .exec();
+
+// ── After (explicit join) ─────────────────────────────────────────────────
+const orderCriteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "userId"], ["operator", Operator.EQUAL], ["value", userId]]),
+  ]),
+  Order.desc("createdAt")
+);
+
+// Run both queries in parallel
+const [orders, user] = await Promise.all([
+  orderRepo.list<Order>(orderCriteria).then((r) => r.results),
+  userRepo.one({ id: userId }),
+]);
+
+const ordersWithUser = orders.map((order) => ({ ...order.toPrimitives(), user }));
+```
+
+## Step-by-step migration plan
+
+<Steps>
+
+  <Step title="Phase 1 — Install and wire up (Day 1)">
+    Install the package and create a single repository for one of your existing collections. Verify the connection works by calling `one({})` and checking that a document is returned.
+
+    ```bash
+    npm install @abejarano/ts-mongodb-criteria
+    ```
+
+    ```typescript
+    // Set MONGO_URI in your .env, then:
+    const repo = new UserRepository();
+    const sample = await repo.one({});
+    console.log("Connected:", sample?.getId());
+    ```
+  </Step>
+
+  <Step title="Phase 2 — Migrate basic find queries (Week 1)">
+    Replace `find({ field: value })` calls with equality `Criteria` objects one method at a time. Add a `@deprecated` JSDoc on the old method and ship both in the same PR.
+
+    ```typescript
+    // New
+    async getActiveUsers(): Promise<User[]> {
+      const criteria = new Criteria(
+        Filters.fromValues([
+          new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", "active"]]),
+        ]),
+        Order.desc("createdAt"),
+        100
+      );
+      return (await this.list<User>(criteria)).results;
+    }
+    ```
+  </Step>
+
+  <Step title="Phase 3 — Migrate range and search queries (Week 2)">
+    Add `Operator.GTE`, `Operator.LTE`, `Operator.BETWEEN`, and `Operator.CONTAINS` / `OR` to cover date-range and text-search patterns. Set up text indexes in `ensureIndexes` alongside the migration.
+  </Step>
+
+  <Step title="Phase 4 — Dynamic builders and pagination (Week 3)">
+    Replace any hand-rolled `skip` / `limit` pagination with the `page` argument on `Criteria`. Centralise dynamic filter construction in dedicated builder classes or methods to avoid repetitive `Map` construction scattered across the codebase.
+
+    ```typescript
+    class UserCriteriaBuilder {
+      static search(req: UserSearchRequest): Criteria {
+        const maps: Array<Map<string, any>> = [];
+        if (req.status)
+          maps.push(new Map([["field","status"],["operator",Operator.EQUAL],["value",req.status]]));
+        if (req.minAge)
+          maps.push(new Map([["field","age"],["operator",Operator.GTE],["value",req.minAge.toString()]]));
+        return new Criteria(Filters.fromValues(maps), Order.desc("createdAt"), req.limit ?? 20, req.page ?? 1);
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Phase 5 — Cleanup (Week 4)">
+    Delete every `@deprecated` method, remove legacy MongoDB driver imports that are no longer used, and update your team documentation. Run the full integration test suite to confirm nothing regressed.
+  </Step>
+
+</Steps>
+
+<Tip>
+  Use **feature flags** for high-risk query paths. Gate the Criteria code behind a flag like `criteria-migration-users` and enable it for 1 % of traffic, then ramp up. If error rates spike, flip the flag off — the legacy path is still in place and zero schema changes are needed.
+</Tip>
+
+## Testing strategy
+
+### Unit-test the converter output
+
+```typescript
+import { MongoCriteriaConverter } from "@abejarano/ts-mongodb-criteria";
+
+describe("UserCriteriaBuilder", () => {
+  const converter = new MongoCriteriaConverter();
+
+  it("generates the correct filter for active adults", () => {
+    const criteria = UserCriteriaBuilder.search({ status: "active", minAge: 18 });
+    const { filter } = converter.convert(criteria);
+
+    expect(filter).toEqual({ status: "active", age: { $gte: 18 } });
+  });
+
+  it("includes $or for search terms", () => {
+    const criteria = UserCriteriaBuilder.search({ searchTerm: "alice" });
+    const { filter } = converter.convert(criteria);
+
+    expect(filter.$or).toHaveLength(2);
+  });
+});
+```
+
+### Integration-test both paths in parallel
+
+```typescript
+describe("Migration integration", () => {
+  it("returns identical IDs from old and new implementations", async () => {
+    const req = { status: "active", minAge: 25 };
+
+    const [oldIds, newIds] = await Promise.all([
+      legacyService.findUsers(req).then((r) => r.map((u) => u.id).sort()),
+      newService.findUsers(req).then((r) => r.map((u) => u.getId()).sort()),
+    ]);
+
+    expect(newIds).toEqual(oldIds);
+  });
+});
+```
+
+Run both test layers in CI on every PR that touches repository or criteria code.

@@ -1,0 +1,237 @@
+---
+title: "Order, OrderBy, and OrderType — ts-mongo-criteria API Reference"
+sidebarTitle: "Order"
+description: "Order controls query sort direction. Use Order.asc(), Order.desc(), or Order.fromValues() to build sort specifications consumed by MongoRepository."
+---
+
+`Order` carries the sort specification for a `Criteria` query. It bundles an `OrderBy` (the field to sort on) and an `OrderType` (the direction). Three static factory methods cover the most common cases, while `Order.fromValues()` is useful when the field name and direction arrive as runtime strings — for example from a URL query parameter.
+
+---
+
+## `Order` class
+
+### Properties
+
+| Property    | Type        | Description                                                   |
+| ----------- | ----------- | ------------------------------------------------------------- |
+| `orderBy`   | `OrderBy`   | Wraps the document field name to sort on.                     |
+| `orderType` | `OrderType` | Wraps the sort direction (`asc`, `desc`, or `none`).          |
+
+---
+
+### Factory methods
+
+#### `static asc(orderBy: string): Order`
+
+Creates an ascending sort on the given field.
+
+```typescript
+import { Order } from "@abejarano/ts-mongodb-criteria";
+
+const order = Order.asc("name");
+// → MongoDB: { name: 1 }
+
+console.log(order.hasOrder());           // true
+console.log(order.orderBy.getValue());   // "name"
+console.log(order.orderType.isAsc());    // true
+```
+
+---
+
+#### `static desc(orderBy: string): Order`
+
+Creates a descending sort on the given field.
+
+```typescript
+import { Order } from "@abejarano/ts-mongodb-criteria";
+
+const order = Order.desc("createdAt");
+// → MongoDB: { createdAt: -1 }
+
+console.log(order.hasOrder());           // true
+console.log(order.orderType.isNone());   // false
+```
+
+---
+
+#### `static none(): Order`
+
+Creates a no-op sort. `MongoCriteriaConverter` detects this via `hasOrder()` and falls back to the default sort `{ _id: -1 }` (newest documents first). Use this when the caller does not specify a sort preference.
+
+```typescript
+import { Criteria, Filters, Order } from "@abejarano/ts-mongodb-criteria";
+
+const criteria = new Criteria(Filters.none(), Order.none());
+
+console.log(criteria.order.hasOrder());          // false
+console.log(criteria.order.orderType.isNone());  // true
+// MongoCriteriaConverter will use { _id: -1 }
+```
+
+---
+
+#### `static fromValues(orderBy?: string, orderType?: string): Order`
+
+Builds an `Order` from optional runtime strings. This is the recommended factory when the sort field and direction come from user input (e.g. API query parameters). Both parameters are optional:
+
+- When both are provided, `OrderType.fromValue()` parses the direction string (`"asc"`, `"desc"`, `"none"`).
+- When either is omitted, `Order.none()` is returned.
+
+```typescript
+import { Order } from "@abejarano/ts-mongodb-criteria";
+
+// From query params: ?orderBy=price&orderType=asc
+const order = Order.fromValues(req.query.orderBy, req.query.orderType);
+
+// Omitting parameters falls back to Order.none()
+const defaultOrder = Order.fromValues();
+console.log(defaultOrder.hasOrder()); // false
+```
+
+<Note>
+  `Order.fromValues()` delegates direction parsing to `OrderType.fromValue()`.
+  If `orderType` is present but not `"asc"`, `"desc"`, or `"none"`, an
+  `InvalidArgumentError` is thrown. See [Operators](/api/filter-operators) for
+  details on `InvalidArgumentError`.
+</Note>
+
+---
+
+### Instance method
+
+#### `hasOrder(): boolean`
+
+Returns `true` when `orderType` is `asc` or `desc` (i.e. not `none`). `MongoCriteriaConverter` calls this to decide whether to apply your sort or fall back to `{ _id: -1 }`.
+
+```typescript
+Order.asc("price").hasOrder();  // true
+Order.desc("age").hasOrder();   // true
+Order.none().hasOrder();        // false
+```
+
+---
+
+## `OrderBy` class
+
+`OrderBy` is a simple value object that holds the document field name string. You rarely construct it directly — the `Order` factory methods do it for you.
+
+### `static create(value: string): OrderBy`
+
+```typescript
+import { OrderBy } from "@abejarano/ts-mongodb-criteria";
+
+const orderBy = OrderBy.create("email");
+console.log(orderBy.getValue()); // "email"
+```
+
+### `getValue(): string`
+
+Returns the raw field name string wrapped by this `OrderBy`.
+
+---
+
+## `OrderTypes` enum
+
+```typescript
+export enum OrderTypes {
+  ASC  = "asc",
+  DESC = "desc",
+  NONE = "none",
+}
+```
+
+| Member | String value | Meaning                           |
+| ------ | ------------ | --------------------------------- |
+| `ASC`  | `"asc"`      | Sort ascending (A→Z, 0→9, oldest first). |
+| `DESC` | `"desc"`     | Sort descending (Z→A, 9→0, newest first). |
+| `NONE` | `"none"`     | No sort preference; converter uses default `{ _id: -1 }`. |
+
+---
+
+## `OrderType` class
+
+`OrderType` wraps an `OrderTypes` enum member. It extends `EnumValueObject<OrderTypes>`.
+
+### `static fromValue(value: string): OrderType`
+
+Parses a direction string into an `OrderType`. The string must be exactly `"asc"`, `"desc"`, or `"none"` (case-sensitive); any other value throws `InvalidArgumentError`.
+
+```typescript
+import { OrderType } from "@abejarano/ts-mongodb-criteria";
+
+const ot = OrderType.fromValue("desc");
+console.log(ot.isNone()); // false
+console.log(ot.isAsc());  // false
+```
+
+### `isNone(): boolean`
+
+Returns `true` when the wrapped value is `OrderTypes.NONE`.
+
+### `isAsc(): boolean`
+
+Returns `true` when the wrapped value is `OrderTypes.ASC`.
+
+---
+
+## Default sort behaviour
+
+When `Order.none()` is passed to `Criteria` and the `Criteria` is processed by `MongoCriteriaConverter`, the converter checks `order.hasOrder()`. Because `hasOrder()` returns `false`, the converter applies the fallback sort `{ _id: -1 }`, returning documents in reverse insertion order (newest first).
+
+```
+Criteria(Filters.none(), Order.none())
+  └─ MongoCriteriaConverter
+       ├─ filter:  {}           (no conditions)
+       └─ sort:    { _id: -1 } (default — hasOrder() is false)
+```
+
+If you explicitly want ascending insertion order, use `Order.asc("_id")` rather than `Order.none()`.
+
+---
+
+## Complete examples
+
+```typescript
+import {
+  Criteria,
+  Filters,
+  Order,
+} from "@abejarano/ts-mongodb-criteria";
+
+// ── Ascending sort ────────────────────────────────────────────────────────────
+const byNameAsc = new Criteria(
+  Filters.none(),
+  Order.asc("lastName")
+);
+// MongoDB sort: { lastName: 1 }
+
+// ── Descending sort ───────────────────────────────────────────────────────────
+const byDateDesc = new Criteria(
+  Filters.none(),
+  Order.desc("createdAt")
+);
+// MongoDB sort: { createdAt: -1 }
+
+// ── No sort (uses default { _id: -1 }) ────────────────────────────────────────
+const noSort = new Criteria(
+  Filters.none(),
+  Order.none()
+);
+// MongoDB sort: { _id: -1 }  (applied by MongoCriteriaConverter)
+
+// ── Dynamic sort from HTTP query params ──────────────────────────────────────
+// GET /users?orderBy=score&orderType=desc
+const dynamicOrder = Order.fromValues(
+  req.query.orderBy as string | undefined,
+  req.query.orderType as string | undefined
+);
+
+const criteria = new Criteria(
+  Filters.fromValues([
+    new Map([["field", "isActive"], ["operator", "="], ["value", true]]),
+  ]),
+  dynamicOrder,
+  25, // limit
+  1   // page
+);
+```

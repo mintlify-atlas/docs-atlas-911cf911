@@ -1,0 +1,166 @@
+---
+title: "Understanding the Criteria Pattern in ts-mongo-criteria"
+sidebarTitle: "Criteria Pattern"
+description: "The Criteria Pattern encapsulates MongoDB query logic in composable, type-safe objects — enabling dynamic queries without raw filter objects or method proliferation."
+---
+
+The **Criteria Pattern** is a structural design pattern that encapsulates query conditions into dedicated objects instead of scattering raw filter logic throughout your codebase. In `ts-mongo-criteria`, a `Criteria` instance bundles together filters, sort order, and pagination into a single, composable unit that a repository can translate into a MongoDB query. This means your application layer never touches MongoDB-specific syntax — it speaks in domain terms, while the infrastructure layer handles the translation.
+
+## Core components
+
+<CardGroup cols={2}>
+  <Card title="Criteria" icon="layer-group">
+    The top-level query object. Holds a `Filters` collection, an `Order`, and optional `limit` / `offset` (page number) parameters. Also exposes `hasFilters()` to check if any conditions are set.
+  </Card>
+  <Card title="Filters" icon="filter">
+    A typed collection of `Filter` objects. Build it with `Filters.fromValues()` from an array of plain `Map` entries, or use `Filters.none()` for an unfiltered query.
+  </Card>
+  <Card title="Filter" icon="magnifying-glass">
+    Represents a single query condition — a `FilterField` (column name), a `FilterOperator` (e.g. `EQUAL`, `GT`, `BETWEEN`), and a `FilterValue` (the comparison value or complex structure).
+  </Card>
+  <Card title="Order" icon="arrow-up-a-z">
+    Encapsulates the sort field and direction (`asc`, `desc`, or `none`). Factory methods — `Order.asc()`, `Order.desc()`, `Order.none()` — cover the common cases.
+  </Card>
+</CardGroup>
+
+## Class relationship diagram
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                        Criteria                         │
+│                                                         │
+│  filters : Filters          order : Order               │
+│  limit?  : number           offset?: number             │
+│  currentPage?: number                                   │
+│  hasFilters(): boolean                                  │
+└──────────────┬──────────────────────────┬──────────────┘
+               │  1                    1  │
+               ▼                         ▼
+  ┌────────────────────┐     ┌─────────────────────────┐
+  │       Filters      │     │          Order           │
+  │                    │     │                          │
+  │ filters: Filter[]  │     │ orderBy  : OrderBy       │
+  │ fromValues(...)    │     │ orderType: OrderType     │
+  │ none()             │     │ asc(field)               │
+  └─────────┬──────────┘     │ desc(field)              │
+            │ 0..*           │ none()                   │
+            ▼                │ hasOrder(): boolean      │
+  ┌────────────────────┐     └─────────────────────────┘
+  │       Filter       │
+  │                    │
+  │ field   : FilterField    ──▶  string (column name)
+  │ operator: FilterOperator ──▶  Operator enum
+  │ value   : FilterValue    ──▶  primitive | array |
+  │ fromValues(map)           │   OrCondition[] |
+  └────────────────────┘      │   BetweenValue
+                              ▼
+                       FilterValue
+                       (StringValueObject)
+```
+
+## When to use
+
+<Tip>
+**Good use cases for the Criteria Pattern:**
+- **Dynamic queries** — user-driven filter UIs where conditions vary at runtime.
+- **Repository pattern** — keep domain repositories free of raw MongoDB filter objects.
+- **Business rule queries** — named factory methods (`UserCriteria.activeAdmins()`) make intent explicit and reusable.
+- **Testability** — pass a known `Criteria` into a repository in unit tests without mocking MongoDB drivers.
+</Tip>
+
+<Note>
+**When the Criteria Pattern may be overkill:**
+- **Simple static queries** — if you always query by a single fixed field (e.g. `findByEmail`), a direct repository method is less ceremony.
+- **One-off lookups** — migrations, scripts, or debug queries that run once don't benefit from the extra abstraction layer.
+</Note>
+
+## Full working example
+
+```typescript
+import {
+  Criteria,
+  Filters,
+  Order,
+  Operator,
+} from "@abejarano/ts-mongodb-criteria"
+
+// Build individual filter maps
+const statusFilter = new Map<string, any>([
+  ["field", "status"],
+  ["operator", Operator.EQUAL],
+  ["value", "active"],
+])
+
+const ageFilter = new Map<string, any>([
+  ["field", "age"],
+  ["operator", Operator.GTE],
+  ["value", 18],
+])
+
+const nameFilter = new Map<string, any>([
+  ["field", "name"],
+  ["operator", Operator.CONTAINS],
+  ["value", "Smith"],
+])
+
+// Assemble the Criteria
+const criteria = new Criteria(
+  Filters.fromValues([statusFilter, ageFilter, nameFilter]),
+  Order.asc("name"),
+  10,  // limit: 10 results per page
+  2    // offset: page 2  →  skip = (2 - 1) * 10 = 10
+)
+
+// Inspect
+console.log(criteria.hasFilters()) // true
+console.log(criteria.limit)        // 10
+console.log(criteria.offset)       // 10  (calculated skip value)
+console.log(criteria.currentPage)  // 2
+
+// Pass to your MongoRepository
+// const results = await userRepository.list(criteria)
+```
+
+## Benefits
+
+### Type Safety
+
+Every part of a query — the field name, the operator, and the value — is validated at construction time. `FilterOperator.fromValue()` throws `InvalidArgumentError` for unrecognised operators, `FilterValue` validates that BETWEEN and OR values have the expected shape, and `Order` rejects unknown sort directions. Type errors surface before any network call is made.
+
+### Composability
+
+`Filters.fromValues()` accepts an array of maps, so you can build filter arrays conditionally and compose them freely:
+
+```typescript
+const filters: Array<Map<string, any>> = []
+
+if (statusParam) {
+  filters.push(new Map([["field", "status"], ["operator", Operator.EQUAL], ["value", statusParam]]))
+}
+if (minAge) {
+  filters.push(new Map([["field", "age"], ["operator", Operator.GTE], ["value", minAge]]))
+}
+
+const criteria = new Criteria(Filters.fromValues(filters), Order.none())
+```
+
+### Reusability
+
+Wrap common criteria in factory functions or static methods so the same query logic is never duplicated:
+
+```typescript
+class ProductCriteria {
+  static inStock(page: number, pageSize: number): Criteria {
+    const filter = new Map<string, any>([
+      ["field", "stock"],
+      ["operator", Operator.GT],
+      ["value", 0],
+    ])
+    return new Criteria(Filters.fromValues([filter]), Order.desc("createdAt"), pageSize, page)
+  }
+}
+```
+
+### Testability
+
+Because `Criteria` is a plain value object with no side effects, unit tests can assert on its properties directly — no MongoDB connection required. Repositories that accept a `Criteria` parameter are straightforward to test with a stub or in-memory implementation.

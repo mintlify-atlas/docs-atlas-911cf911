@@ -1,0 +1,234 @@
+---
+title: "FilterValue Types — ts-mongo-criteria API Reference"
+sidebarTitle: "FilterValue"
+description: "FilterInputValue is a union type supporting primitives, primitive arrays, BetweenValue objects, and OrCondition arrays — each used by a specific operator."
+---
+
+Every `Filter` condition carries a value, but not every value looks the same. A simple equality check needs a single `string` or `number`; a range query needs both a lower and an upper bound; an `OR` clause needs a list of sub-conditions. `FilterInputValue` is the union type that accommodates all of these shapes, and `FilterValue` is the class that wraps whichever shape you supply.
+
+---
+
+## `FilterPrimitive`
+
+The most basic value type — a single scalar used by the majority of comparison operators.
+
+```typescript
+type FilterPrimitive = string | number | boolean | Date;
+```
+
+**Examples:**
+
+```typescript
+import { FilterValue } from "@abejarano/ts-mongodb-criteria";
+
+new FilterValue("active");          // string
+new FilterValue(42);                // number
+new FilterValue(true);              // boolean
+new FilterValue(new Date("2024-01-01")); // Date
+```
+
+Used with: `EQUAL`, `NOT_EQUAL`, `GT`, `GTE`, `LT`, `LTE`, `CONTAINS`, `NOT_CONTAINS`.
+
+---
+
+## `BetweenValue`
+
+A range value used exclusively with the `BETWEEN` operator. Three key-name shapes are accepted so you can choose the convention that reads most naturally in your codebase. All three are equivalent at runtime — `FilterValue.asBetween` always normalises them to `{ start, end }`.
+
+```typescript
+// Shape 1 — generic start/end
+interface BetweenStartEnd {
+  start: FilterPrimitive;
+  end: FilterPrimitive;
+}
+
+// Shape 2 — date-oriented startDate/endDate
+interface BetweenDateRange {
+  startDate: FilterPrimitive;
+  endDate: FilterPrimitive;
+}
+
+// Shape 3 — from/to
+interface BetweenFromTo {
+  from: FilterPrimitive;
+  to: FilterPrimitive;
+}
+
+type BetweenValue = BetweenStartEnd | BetweenDateRange | BetweenFromTo;
+```
+
+**Examples:**
+
+```typescript
+import { Filter, FilterField, FilterOperator, FilterValue, Operator } from "@abejarano/ts-mongodb-criteria";
+
+// Shape 1: start / end
+const ageRange = new Filter(
+  new FilterField("age"),
+  new FilterOperator(Operator.BETWEEN),
+  new FilterValue({ start: 18, end: 65 })
+);
+
+// Shape 2: startDate / endDate (same semantics, different keys)
+const dateRange = new Filter(
+  new FilterField("createdAt"),
+  new FilterOperator(Operator.BETWEEN),
+  new FilterValue({ startDate: new Date("2024-01-01"), endDate: new Date("2024-12-31") })
+);
+
+// Shape 3: from / to
+const scoreRange = new Filter(
+  new FilterField("score"),
+  new FilterOperator(Operator.BETWEEN),
+  new FilterValue({ from: 50, to: 100 })
+);
+
+// Access the normalised value
+const fv = new FilterValue({ from: 50, to: 100 });
+console.log(fv.isBetween);   // true
+console.log(fv.asBetween);   // { start: 50, end: 100 }
+```
+
+---
+
+## `OrCondition`
+
+An `OrCondition` represents a single sub-clause inside an `OR` filter. You pass an **array** of `OrCondition` objects as the `FilterValue` to build a logical OR across multiple conditions on the same or different fields.
+
+```typescript
+interface OrCondition {
+  field: string;
+  operator: Operator;
+  value: string;
+}
+```
+
+| Property   | Type       | Description                                              |
+| ---------- | ---------- | -------------------------------------------------------- |
+| `field`    | `string`   | The document field name for this sub-condition.          |
+| `operator` | `Operator` | The comparison operator for this sub-condition.          |
+| `value`    | `string`   | The comparison value (always serialised as a `string`).  |
+
+**Example:**
+
+```typescript
+import {
+  Filter,
+  FilterField,
+  FilterOperator,
+  FilterValue,
+  Operator,
+} from "@abejarano/ts-mongodb-criteria";
+
+const orFilter = new Filter(
+  new FilterField("status"),           // top-level field (often unused by the converter)
+  new FilterOperator(Operator.OR),
+  new FilterValue([
+    { field: "status", operator: Operator.EQUAL, value: "active" },
+    { field: "status", operator: Operator.EQUAL, value: "pending" },
+    { field: "role",   operator: Operator.EQUAL, value: "admin" },
+  ])
+);
+
+const fv = orFilter.value;
+console.log(fv.isOrConditions);  // true
+console.log(fv.asOrConditions);
+// [
+//   { field: "status", operator: "=",  value: "active"  },
+//   { field: "status", operator: "=",  value: "pending" },
+//   { field: "role",   operator: "=",  value: "admin"   },
+// ]
+```
+
+---
+
+## `FilterInputValue`
+
+The top-level union accepted by the `FilterValue` constructor and by `Filter.fromValues()` / `Filters.fromValues()`.
+
+```typescript
+type FilterInputValue =
+  | FilterPrimitive                     // string | number | boolean | Date
+  | FilterPrimitive[]                   // array of primitives → IN / NOT_IN
+  | OrCondition[]                       // array of sub-conditions → OR
+  | BetweenValue;                       // range object → BETWEEN
+```
+
+---
+
+## Operator–value type reference
+
+Use this table to choose the correct `FilterInputValue` shape for each operator:
+
+| Operator(s)                                                      | Required value type   | Example value                              |
+| ---------------------------------------------------------------- | --------------------- | ------------------------------------------ |
+| `EQUAL`, `NOT_EQUAL`, `GT`, `GTE`, `LT`, `LTE`                  | `FilterPrimitive`     | `42`, `"active"`, `new Date("2024-01-01")` |
+| `CONTAINS`, `NOT_CONTAINS`                                       | `FilterPrimitive` (string) | `"@example.com"`                      |
+| `IN`, `NOT_IN`                                                   | `FilterPrimitive[]`   | `["admin", "editor"]`                      |
+| `BETWEEN`                                                        | `BetweenValue`        | `{ start: 10, end: 50 }`                   |
+| `OR`                                                             | `OrCondition[]`       | `[{ field, operator, value }, ...]`        |
+
+---
+
+## Code examples for every value type
+
+```typescript
+import {
+  Filter,
+  FilterField,
+  FilterOperator,
+  FilterValue,
+  Operator,
+} from "@abejarano/ts-mongodb-criteria";
+
+// ── Primitive ────────────────────────────────────────────────────────────────
+const equalFilter = new Filter(
+  new FilterField("isVerified"),
+  new FilterOperator(Operator.EQUAL),
+  new FilterValue(true)
+);
+
+// ── Primitive array (IN) ─────────────────────────────────────────────────────
+const inFilter = new Filter(
+  new FilterField("role"),
+  new FilterOperator(Operator.IN),
+  new FilterValue(["admin", "editor", "moderator"])
+);
+console.log(inFilter.value.isPrimitiveArray); // true
+
+// ── Primitive array (NOT_IN) ─────────────────────────────────────────────────
+const notInFilter = new Filter(
+  new FilterField("status"),
+  new FilterOperator(Operator.NOT_IN),
+  new FilterValue(["deleted", "banned"])
+);
+
+// ── BetweenValue ─────────────────────────────────────────────────────────────
+const betweenFilter = new Filter(
+  new FilterField("price"),
+  new FilterOperator(Operator.BETWEEN),
+  new FilterValue({ start: 100, end: 500 })
+);
+console.log(betweenFilter.value.isBetween); // true
+console.log(betweenFilter.value.asBetween); // { start: 100, end: 500 }
+
+// ── OrCondition[] ─────────────────────────────────────────────────────────────
+const orFilter = new Filter(
+  new FilterField("category"),
+  new FilterOperator(Operator.OR),
+  new FilterValue([
+    { field: "category", operator: Operator.EQUAL, value: "electronics" },
+    { field: "category", operator: Operator.EQUAL, value: "appliances" },
+  ])
+);
+console.log(orFilter.value.isOrConditions); // true
+```
+
+<Warning>
+  Passing the wrong value type for a given operator will **not** cause a
+  TypeScript compile error (the constructor accepts the full union), but it
+  **will** throw a runtime error inside `MongoCriteriaConverter` when it tries
+  to call the wrong accessor — for example, calling `asBetween` on a value
+  where `isBetween` is `false`. Always match the value shape to the operator
+  using the reference table above.
+</Warning>

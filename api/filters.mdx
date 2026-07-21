@@ -1,0 +1,208 @@
+---
+title: "Filters and Filter — ts-mongo-criteria API Reference"
+sidebarTitle: "Filters"
+description: "Filters wraps an array of Filter conditions. Use Filters.fromValues() to build from Map arrays or Filters.none() for no-filter queries."
+---
+
+`Filters` is a collection wrapper that holds one or more [`Filter`](#filter-class) conditions. A `Filter` in turn bundles a `FilterField` (the document field to query on), a `FilterOperator` (how to compare), and a `FilterValue` (what to compare against). Together they produce the `WHERE` clause equivalent of a MongoDB find query.
+
+---
+
+## `Filters` class
+
+### Properties
+
+| Property  | Type       | Description                          |
+| --------- | ---------- | ------------------------------------ |
+| `filters` | `Filter[]` | The array of `Filter` conditions held by this collection. |
+
+### `constructor(filters: Filter[])`
+
+Creates a `Filters` collection directly from an array of pre-built `Filter` instances.
+
+```typescript
+import { Filters, Filter, FilterField, FilterOperator, FilterValue, Operator } from "@abejarano/ts-mongodb-criteria";
+
+const filters = new Filters([
+  new Filter(
+    new FilterField("age"),
+    new FilterOperator(Operator.GT),
+    new FilterValue(18)
+  ),
+]);
+```
+
+### `static fromValues(filters: Array<Map<string, FilterInputValue>>): Filters`
+
+Factory method that builds a `Filters` collection from a plain array of `Map` objects. Each `Map` must contain exactly three keys:
+
+| Map key      | Type               | Description                                          |
+| ------------ | ------------------ | ---------------------------------------------------- |
+| `"field"`    | `string`           | The document field name to filter on.                |
+| `"operator"` | `string`           | A string matching one of the `Operator` enum values (e.g. `"="`, `"CONTAINS"`). |
+| `"value"`    | `FilterInputValue` | The value to compare against (primitive, array, `BetweenValue`, or `OrCondition[]`). |
+
+`fromValues` delegates to `Filter.fromValues()` for each map entry, which calls `FilterOperator.fromValue()` internally — an `InvalidArgumentError` is thrown if the operator string is not a known `Operator` value.
+
+```typescript
+import { Filters } from "@abejarano/ts-mongodb-criteria";
+
+const filters = Filters.fromValues([
+  new Map([
+    ["field",    "status"],
+    ["operator", "="],
+    ["value",    "active"],
+  ]),
+  new Map([
+    ["field",    "score"],
+    ["operator", ">="],
+    ["value",    75],
+  ]),
+]);
+```
+
+### `static none(): Filters`
+
+Returns an empty `Filters` collection (zero `Filter` objects). Pass this to `Criteria` when you want to retrieve all documents without any filtering. `Criteria.hasFilters()` returns `false` for a `Filters.none()` instance.
+
+```typescript
+import { Criteria, Filters, Order } from "@abejarano/ts-mongodb-criteria";
+
+const criteria = new Criteria(Filters.none(), Order.none());
+console.log(criteria.hasFilters()); // false
+```
+
+---
+
+## `Filter` class
+
+A `Filter` represents a single condition: *field* **op** *value*. It is the atomic unit inside a `Filters` collection.
+
+### Properties
+
+| Property   | Type             | Description                                       |
+| ---------- | ---------------- | ------------------------------------------------- |
+| `field`    | `FilterField`    | Wraps the document field name string.             |
+| `operator` | `FilterOperator` | Wraps the comparison operator.                    |
+| `value`    | `FilterValue`    | Wraps the value being compared.                   |
+
+### `constructor(field, operator, value)`
+
+```typescript
+import {
+  Filter,
+  FilterField,
+  FilterOperator,
+  FilterValue,
+  Operator,
+} from "@abejarano/ts-mongodb-criteria";
+
+const filter = new Filter(
+  new FilterField("email"),
+  new FilterOperator(Operator.CONTAINS),
+  new FilterValue("@example.com")
+);
+```
+
+### `static fromValues(values: Map<string, FilterInputValue>): Filter`
+
+Convenience factory that builds a `Filter` from a single `Map` with `"field"`, `"operator"`, and `"value"` keys. This is the method `Filters.fromValues()` calls internally for each array entry.
+
+```typescript
+import { Filter } from "@abejarano/ts-mongodb-criteria";
+
+const filter = Filter.fromValues(
+  new Map([
+    ["field",    "role"],
+    ["operator", "!="],
+    ["value",    "guest"],
+  ])
+);
+```
+
+---
+
+## `FilterField`
+
+`FilterField` is a thin wrapper around a plain `string` that names the MongoDB document field to query. It extends `StringValueObject`.
+
+```typescript
+import { FilterField } from "@abejarano/ts-mongodb-criteria";
+
+const field = new FilterField("user.profile.age"); // nested paths supported
+```
+
+Pass a dot-notation string to query nested document fields (e.g. `"address.city"`).
+
+---
+
+## `FilterValue`
+
+`FilterValue` wraps a `FilterInputValue` — a union that covers every value shape accepted by the operator set. It exposes typed accessor pairs so downstream converters (e.g. `MongoCriteriaConverter`) can safely extract the underlying data.
+
+```typescript
+type FilterInputValue =
+  | FilterPrimitive          // string | number | boolean | Date
+  | FilterPrimitive[]        // used with IN / NOT_IN
+  | OrCondition[]            // used with OR
+  | BetweenValue;            // used with BETWEEN
+```
+
+See [FilterValue Types](/api/filter) for a full breakdown of each shape.
+
+### `FilterValue` accessors
+
+| Accessor            | Type              | Description                                                                    |
+| ------------------- | ----------------- | ------------------------------------------------------------------------------ |
+| `isOrConditions`    | `boolean`         | `true` when the wrapped value is an `OrCondition[]`.                           |
+| `asOrConditions`    | `OrCondition[]`   | Returns the value cast as `OrCondition[]`. Check `isOrConditions` first.       |
+| `isBetween`         | `boolean`         | `true` when the wrapped value is a `BetweenValue` object.                      |
+| `asBetween`         | `{ start: FilterPrimitive; end: FilterPrimitive }` | Returns the `BetweenValue` normalised to `{ start, end }`. Check `isBetween` first. |
+| `isPrimitiveArray`  | `boolean`         | `true` when the wrapped value is `FilterPrimitive[]`.                          |
+| `asPrimitiveArray`  | `FilterPrimitive[]` | Returns the value cast as a `FilterPrimitive[]`. Check `isPrimitiveArray` first. |
+
+```typescript
+import { FilterValue, Operator } from "@abejarano/ts-mongodb-criteria";
+
+// Primitive array (IN operator)
+const inValue = new FilterValue(["admin", "editor", "viewer"]);
+console.log(inValue.isPrimitiveArray);   // true
+console.log(inValue.asPrimitiveArray);   // ["admin", "editor", "viewer"]
+
+// BetweenValue (BETWEEN operator)
+const rangeValue = new FilterValue({ start: 10, end: 50 });
+console.log(rangeValue.isBetween);       // true
+console.log(rangeValue.asBetween);       // { start: 10, end: 50 }
+
+// OrCondition array (OR operator)
+const orValue = new FilterValue([
+  { field: "status", operator: Operator.EQUAL, value: "active" },
+  { field: "status", operator: Operator.EQUAL, value: "pending" },
+]);
+console.log(orValue.isOrConditions);     // true
+console.log(orValue.asOrConditions);     // [{ field: "status", ... }, ...]
+```
+
+---
+
+## Complete example — `Filters.fromValues()`
+
+```typescript
+import { Criteria, Filters, Order } from "@abejarano/ts-mongodb-criteria";
+
+const criteria = new Criteria(
+  Filters.fromValues([
+    // Exact match
+    new Map([["field", "isActive"], ["operator", "="],  ["value", true]]),
+    // Range filter
+    new Map([["field", "age"],      ["operator", ">="], ["value", 21]]),
+    // Substring search
+    new Map([["field", "name"],     ["operator", "CONTAINS"], ["value", "Smith"]]),
+  ]),
+  Order.asc("name"),
+  20,  // limit
+  1    // page
+);
+
+const results = await userRepository.list(criteria);
+```

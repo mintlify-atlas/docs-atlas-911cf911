@@ -1,0 +1,114 @@
+---
+title: "Criteria — ts-mongo-criteria API Reference"
+sidebarTitle: "Criteria"
+description: "Criteria is the top-level query object combining Filters, Order, limit, and page number. Pass it to MongoRepository.list() to execute a paginated query."
+---
+
+`Criteria` is the central query object in `ts-mongo-criteria`. It bundles a [`Filters`](/api/filters) collection, an [`Order`](/api/order) specification, and optional pagination parameters into a single value that `MongoRepository.list()` (or your own repository) consumes to build and execute a MongoDB query.
+
+## Constructor
+
+```typescript
+new Criteria(filters: Filters, order: Order, limit?: number, offset?: number)
+```
+
+<ParamField path="filters" type="Filters" required>
+  The set of filter conditions to apply to the query. Pass `Filters.none()` to
+  retrieve all documents without filtering.
+</ParamField>
+
+<ParamField path="order" type="Order" required>
+  The sort specification for the query. Pass `Order.none()` to use the
+  repository's default sort (typically `{ _id: -1 }`).
+</ParamField>
+
+<ParamField path="limit" type="number">
+  Maximum number of documents to return per page. When omitted the repository
+  returns all matching documents.
+</ParamField>
+
+<ParamField path="offset" type="number">
+  **1-based page number**, not a raw skip value. The repository converts this to
+  a MongoDB `skip` of `(offset - 1) * limit`. When omitted the query starts
+  from the first document.
+</ParamField>
+
+## Properties
+
+| Property      | Type      | Description                                                                                      |
+| ------------- | --------- | ------------------------------------------------------------------------------------------------ |
+| `filters`     | `Filters` | The `Filters` instance passed to the constructor.                                                |
+| `order`       | `Order`   | The `Order` instance passed to the constructor.                                                  |
+| `limit`       | `number \| undefined` | Maximum documents per page.                                                        |
+| `offset`      | `number \| undefined` | 1-based page number. The computed MongoDB skip is `(offset - 1) * limit`.          |
+| `currentPage` | `number \| undefined` | Alias for `offset`; reflects the current logical page number as supplied.          |
+
+## Methods
+
+### `hasFilters(): boolean`
+
+Returns `true` when the `Filters` collection contains at least one `Filter` condition, `false` otherwise. Useful for conditionally logging or short-circuiting query logic.
+
+```typescript
+const criteria = new Criteria(Filters.none(), Order.none());
+criteria.hasFilters(); // false
+
+const activeCriteria = new Criteria(
+  Filters.fromValues([new Map([["field", "status"], ["operator", "="], ["value", "active"]])]),
+  Order.none()
+);
+activeCriteria.hasFilters(); // true
+```
+
+## Usage Example
+
+```typescript
+import {
+  Criteria,
+  Filters,
+  Filter,
+  FilterField,
+  FilterOperator,
+  FilterValue,
+  Operator,
+  Order,
+} from "@abejarano/ts-mongodb-criteria";
+
+// Build individual filter conditions
+const statusFilter = new Filter(
+  new FilterField("status"),
+  new FilterOperator(Operator.EQUAL),
+  new FilterValue("active")
+);
+
+const scoreFilter = new Filter(
+  new FilterField("score"),
+  new FilterOperator(Operator.GTE),
+  new FilterValue(80)
+);
+
+// Combine into a Filters collection
+const filters = new Filters([statusFilter, scoreFilter]);
+
+// Sort by createdAt descending
+const order = Order.desc("createdAt");
+
+// Page 2, 25 documents per page
+//   → MongoDB: skip = (2 - 1) * 25 = 25, limit = 25
+const criteria = new Criteria(filters, order, 25, 2);
+
+console.log(criteria.hasFilters()); // true
+console.log(criteria.limit);        // 25
+console.log(criteria.offset);       // 2  (page number, NOT raw skip)
+console.log(criteria.currentPage);  // 2
+
+// Pass to your repository
+const results = await userRepository.list(criteria);
+```
+
+<Note>
+  **`offset` is a page number, not a raw skip.** If you supply `offset: 3` and
+  `limit: 10`, the repository will call MongoDB with `skip: 20` (i.e.
+  `(3 - 1) * 10`). This differs from MongoDB's own `skip` parameter which is a
+  zero-based document count. Always supply 1-based page numbers to `Criteria`.
+</Note>
