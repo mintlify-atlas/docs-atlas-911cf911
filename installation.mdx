@@ -1,5 +1,5 @@
 ---
-title: "Install and Configure ts-mongo-criteria"
+title: "Install and Configure @abejarano/ts-mongodb-criteria"
 sidebarTitle: "Installation"
 description: "Install @abejarano/ts-mongodb-criteria from npm and configure the MONGO_URI environment variable to connect to your MongoDB instance."
 ---
@@ -175,8 +175,7 @@ The three entrypoints published with the package:
 
 All named exports (`Criteria`, `Filters`, `Order`, `Operator`, `MongoRepository`,
 `AggregateRoot`, `MongoTransaction`, `IRepository`, `Paginate`, `OrCondition`,
-`OrderTypes`, and the value-object base classes) are available from the single
-package root:
+and `OrderTypes`) are available from the single package root:
 
 ```typescript
 import {
@@ -187,6 +186,9 @@ import {
   MongoRepository,
   MongoTransaction,
   AggregateRoot,
+  IRepository,
+  Paginate,
+  OrCondition,
   OrderTypes,
 } from "@abejarano/ts-mongodb-criteria";
 ```

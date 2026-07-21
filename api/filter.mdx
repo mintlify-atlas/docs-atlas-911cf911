@@ -1,7 +1,7 @@
 ---
 title: "FilterValue Types — ts-mongo-criteria API Reference"
 sidebarTitle: "FilterValue"
-description: "FilterInputValue is a union type supporting primitives, primitive arrays, BetweenValue objects, and OrCondition arrays — each used by a specific operator."
+description: "FilterInputValue is a union covering primitives, primitive arrays, BetweenValue objects, and OrCondition arrays — each paired with a specific operator."
 ---
 
 Every `Filter` condition carries a value, but not every value looks the same. A simple equality check needs a single `string` or `number`; a range query needs both a lower and an upper bound; an `OR` clause needs a list of sub-conditions. `FilterInputValue` is the union type that accommodates all of these shapes, and `FilterValue` is the class that wraps whichever shape you supply.

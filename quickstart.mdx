@@ -1,5 +1,5 @@
 ---
-title: "Get Started with ts-mongo-criteria in 5 Minutes"
+title: "Quickstart: Run Your First ts-mongo-criteria Query"
 sidebarTitle: "Quickstart"
 description: "Install @abejarano/ts-mongodb-criteria, configure your MongoDB connection, build your first Criteria query, and execute it through a typed repository."
 ---
@@ -85,7 +85,7 @@ export class User extends AggregateRoot {
   }
 
   /** Serializes the aggregate to a plain object for persistence. */
-  toPrimitives(): Record<string, unknown> {
+  toPrimitives(): any {
     return {
       id: this.id,
       name: this.name,
@@ -230,8 +230,8 @@ import type { User } from "./User";
 async function main() {
   const repo = new UserRepository();
 
-  // list() returns Paginate<User>
-  const page: Paginate<User> = await repo.list(activeAdultsCriteria);
+  // list<D>() returns Paginate<D> — provide the generic to type the results
+  const page: Paginate<User> = await repo.list<User>(activeAdultsCriteria);
 
   console.log(`Total matching users : ${page.count}`);
   console.log(`Results on this page : ${page.results.length}`);

@@ -1,7 +1,7 @@
 ---
 title: "ts-mongo-criteria: Type-Safe MongoDB Query Builder"
 sidebarTitle: "Introduction"
-description: "ts-mongo-criteria implements the Criteria Pattern for MongoDB in TypeScript, enabling type-safe, composable query construction for DDD and Clean Architecture projects."
+description: "ts-mongo-criteria implements the Criteria Pattern for MongoDB in TypeScript for type-safe, composable queries in DDD and Clean Architecture projects."
 ---
 
 `@abejarano/ts-mongodb-criteria` brings the **Criteria Pattern** to MongoDB in TypeScript. Instead of writing raw query objects scattered across your codebase, you compose structured `Criteria` instances that encapsulate filter conditions, sort order, and pagination in a single, reusable object. The result is expressive, testable database logic that fits naturally into Domain-Driven Design (DDD) and Clean Architecture applications — from small Node.js services to large enterprise monorepos.
@@ -9,32 +9,31 @@ description: "ts-mongo-criteria implements the Criteria Pattern for MongoDB in T
 ## Key Features
 
 <CardGroup cols={2}>
-  <Card title="Type-Safe Criteria" icon="shield-check" href="/quickstart">
+  <Card title="Type-Safe Criteria" icon="shield-check" href="/concepts/criteria-pattern">
     Every filter, operator, and sort direction is fully typed. TypeScript catches
     invalid query structures at compile time, long before they reach your
     database.
   </Card>
-  <Card title="12 Filter Operators" icon="filter" href="/quickstart">
+  <Card title="12 Filter Operators" icon="filter" href="/concepts/filters-and-operators">
     `EQUAL`, `NOT_EQUAL`, `GT`, `GTE`, `LT`, `LTE`, `CONTAINS`, `NOT_CONTAINS`,
     `BETWEEN`, `OR`, `IN`, and `NOT_IN` — covering the full range of MongoDB
     query patterns.
   </Card>
-  <Card title="MongoRepository Base" icon="database" href="/quickstart">
+  <Card title="MongoRepository Base" icon="database" href="/api/mongo-repository">
     Extend `MongoRepository<T>` to get `list`, `one`, `many`, `upsert`, and
     `delete` out of the box. Declare your collection name and indexes — nothing
     else required.
   </Card>
-  <Card title="Atomic Transactions" icon="arrows-rotate" href="/quickstart">
+  <Card title="Atomic Transactions" icon="arrows-rotate" href="/guides/transactions">
     `MongoTransaction.run` wraps multiple repository writes in a single MongoDB
     transaction. One failure rolls back every write in the callback
     automatically.
   </Card>
-  <Card title="DDD Primitives" icon="cubes" href="/quickstart">
+  <Card title="DDD Primitives" icon="cubes" href="/concepts/aggregate-root">
     `AggregateRoot`, `IRepository<T>`, `Paginate<T>`, and value-object base
-    classes (`StringValueObject`, `EnumValueObject`) give your domain model a
-    clean, framework-agnostic foundation.
+    classes give your domain model a clean, framework-agnostic foundation.
   </Card>
-  <Card title="CLI Migrations" icon="terminal" href="/quickstart">
+  <Card title="CLI Migrations" icon="terminal" href="/guides/db-migrations">
     The bundled `ts-mongo` CLI wraps `migrate-mongo` so you can create, run, and
     roll back database migrations with a single command — no extra config files
     needed.

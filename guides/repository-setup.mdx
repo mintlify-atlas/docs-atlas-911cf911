@@ -1,5 +1,5 @@
 ---
-title: "Build a MongoDB Repository with ts-mongo-criteria"
+title: "Build a Typed MongoDB Repository with ts-mongo-criteria"
 sidebarTitle: "Repository Setup"
 description: "Extend MongoRepository to create a typed collection repository with lazy index creation, criteria-based listing, upsert, delete, and raw filter queries."
 ---
@@ -162,7 +162,7 @@ The `MongoRepository` abstract class is the heart of `@abejarano/ts-mongodb-crit
   </Step>
 
   <Step title="Persist or update with upsert(entity)">
-    `upsert()` performs an insert-or-replace based on the document's `id` field. Call it identically for both new and existing entities — the library handles the underlying `replaceOne` with `upsert: true`.
+    `upsert()` performs an insert-or-update based on the document's `id` field. Call it identically for both new and existing entities — the library handles the underlying `updateOne` with `$set` and `upsert: true`.
 
     ```typescript
     import { randomUUID } from "crypto";

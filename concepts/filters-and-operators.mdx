@@ -1,7 +1,7 @@
 ---
 title: "Filters and Operators: Build MongoDB Queries in TypeScript"
 sidebarTitle: "Filters & Operators"
-description: "Learn all 12 filter operators in ts-mongo-criteria — from EQUAL and BETWEEN to OR and IN — with TypeScript examples and their MongoDB query equivalents."
+description: "Explore all 12 filter operators in ts-mongo-criteria — EQUAL, BETWEEN, OR, IN, and more — with TypeScript examples and their MongoDB query equivalents."
 ---
 
 `ts-mongo-criteria` ships with twelve operators that cover the full range of MongoDB query conditions. Each operator is represented as a value of the `Operator` enum and is applied through a `Filter` built from a plain `Map`. The `MongoCriteriaConverter` translates your `Criteria` into a ready-to-use MongoDB filter object, so your domain layer never touches raw `$eq`, `$gte`, or `$or` syntax.

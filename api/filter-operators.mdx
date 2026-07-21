@@ -1,5 +1,5 @@
 ---
-title: "Operator Enum — ts-mongo-criteria API Reference"
+title: "Filter Operators — ts-mongo-criteria API Reference"
 sidebarTitle: "Operators"
 description: "The Operator enum defines all 12 filter operators in ts-mongo-criteria with their string values and corresponding MongoDB query operators."
 ---
@@ -56,7 +56,7 @@ Instantiate directly from an enum member when you know the operator at compile t
 import { FilterOperator, Operator } from "@abejarano/ts-mongodb-criteria";
 
 const op = new FilterOperator(Operator.GTE);
-console.log(op.value); // ">"  (the enum string value)
+console.log(op.value); // ">="  (the enum string value)
 ```
 
 ### `static fromValue(value: string): FilterOperator`

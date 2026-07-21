@@ -116,7 +116,7 @@ Every `Operator` enum value maps to a MongoDB query operator:
 | `LTE` (`<=`) | `$lte` | Less than or equal |
 | `CONTAINS` | `$regex` | Substring / pattern match |
 | `NOT_CONTAINS` | `$not: { $regex }` | Negated pattern match |
-| `BETWEEN` | `$gte` + `$lte` | Requires `{ start, end }` or `{ startDate, endDate }` value |
+| `BETWEEN` | `$gte` + `$lte` | Requires `{ start, end }`, `{ startDate, endDate }`, or `{ from, to }` value |
 | `IN` | `$in` | Requires an array of primitive values |
 | `NOT_IN` | `$nin` | Requires an array of primitive values |
 | `OR` | `$or` | Requires an array of `OrCondition` objects |
@@ -163,6 +163,8 @@ console.log(query)
 
 ### BETWEEN date range
 
+The `BETWEEN` operator accepts any of three value shapes: `{ start, end }`, `{ startDate, endDate }`, or `{ from, to }`. All three are normalised to `{ start, end }` internally before producing the `$gte`/`$lte` filter.
+
 ```typescript
 const start = new Date("2024-01-01T00:00:00.000Z")
 const end   = new Date("2024-01-31T23:59:59.999Z")
@@ -180,6 +182,10 @@ const criteria = new Criteria(
 
 const query = converter.convert(criteria)
 // query.filter → { createdAt: { $gte: <start>, $lte: <end> } }
+
+// Equivalent alternatives:
+// { startDate: start, endDate: end }
+// { from: start, to: end }
 ```
 
 ### OR across multiple fields

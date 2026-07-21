@@ -1,5 +1,5 @@
 ---
-title: "Criteria — ts-mongo-criteria API Reference"
+title: "Criteria Class — ts-mongo-criteria API Reference"
 sidebarTitle: "Criteria"
 description: "Criteria is the top-level query object combining Filters, Order, limit, and page number. Pass it to MongoRepository.list() to execute a paginated query."
 ---
@@ -40,8 +40,8 @@ new Criteria(filters: Filters, order: Order, limit?: number, offset?: number)
 | `filters`     | `Filters` | The `Filters` instance passed to the constructor.                                                |
 | `order`       | `Order`   | The `Order` instance passed to the constructor.                                                  |
 | `limit`       | `number \| undefined` | Maximum documents per page.                                                        |
-| `offset`      | `number \| undefined` | 1-based page number. The computed MongoDB skip is `(offset - 1) * limit`.          |
-| `currentPage` | `number \| undefined` | Alias for `offset`; reflects the current logical page number as supplied.          |
+| `currentPage` | `number \| undefined` | The 1-based page number as supplied to the constructor. This is the raw value you pass in. |
+| `offset`      | `number \| undefined` | The computed MongoDB skip value: `(currentPage - 1) * limit`. `undefined` when `limit` or the page number is not provided. |
 
 ## Methods
 
@@ -99,16 +99,18 @@ const criteria = new Criteria(filters, order, 25, 2);
 
 console.log(criteria.hasFilters()); // true
 console.log(criteria.limit);        // 25
-console.log(criteria.offset);       // 2  (page number, NOT raw skip)
-console.log(criteria.currentPage);  // 2
+console.log(criteria.currentPage);  // 2  (page number supplied to constructor)
+console.log(criteria.offset);       // 25 (computed MongoDB skip: (2 - 1) * 25)
 
 // Pass to your repository
 const results = await userRepository.list(criteria);
 ```
 
 <Note>
-  **`offset` is a page number, not a raw skip.** If you supply `offset: 3` and
-  `limit: 10`, the repository will call MongoDB with `skip: 20` (i.e.
-  `(3 - 1) * 10`). This differs from MongoDB's own `skip` parameter which is a
-  zero-based document count. Always supply 1-based page numbers to `Criteria`.
+  **The constructor's `offset` parameter is a 1-based page number.** Internally,
+  `Criteria` stores the page number in `currentPage` and pre-computes the
+  MongoDB skip into `offset` as `(currentPage - 1) * limit`. If you supply
+  page `3` with `limit: 10`, `criteria.offset` will be `20` — the raw skip
+  value that MongoDB receives. Always pass 1-based page numbers to the
+  constructor.
 </Note>

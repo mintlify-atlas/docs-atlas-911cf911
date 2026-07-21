@@ -1,7 +1,7 @@
 ---
 title: "Understanding the Criteria Pattern in ts-mongo-criteria"
 sidebarTitle: "Criteria Pattern"
-description: "The Criteria Pattern encapsulates MongoDB query logic in composable, type-safe objects — enabling dynamic queries without raw filter objects or method proliferation."
+description: "Bundle MongoDB filters, sort order, and pagination into a single type-safe Criteria object, keeping raw query syntax out of your domain layer entirely."
 ---
 
 The **Criteria Pattern** is a structural design pattern that encapsulates query conditions into dedicated objects instead of scattering raw filter logic throughout your codebase. In `ts-mongo-criteria`, a `Criteria` instance bundles together filters, sort order, and pagination into a single, composable unit that a repository can translate into a MongoDB query. This means your application layer never touches MongoDB-specific syntax — it speaks in domain terms, while the infrastructure layer handles the translation.
@@ -10,7 +10,7 @@ The **Criteria Pattern** is a structural design pattern that encapsulates query 
 
 <CardGroup cols={2}>
   <Card title="Criteria" icon="layer-group">
-    The top-level query object. Holds a `Filters` collection, an `Order`, and optional `limit` / `offset` (page number) parameters. Also exposes `hasFilters()` to check if any conditions are set.
+    The top-level query object. Holds a `Filters` collection, an `Order`, and optional `limit` (page size) and page-number parameters. Automatically computes the MongoDB skip value and exposes `hasFilters()` to check if any conditions are set.
   </Card>
   <Card title="Filters" icon="filter">
     A typed collection of `Filter` objects. Build it with `Filters.fromValues()` from an array of plain `Map` entries, or use `Filters.none()` for an unfiltered query.
@@ -30,8 +30,8 @@ The **Criteria Pattern** is a structural design pattern that encapsulates query 
 │                        Criteria                         │
 │                                                         │
 │  filters : Filters          order : Order               │
-│  limit?  : number           offset?: number             │
-│  currentPage?: number                                   │
+│  limit?  : number           offset?: number  ← skip     │
+│  currentPage?: number       ← raw page number           │
 │  hasFilters(): boolean                                  │
 └──────────────┬──────────────────────────┬──────────────┘
                │  1                    1  │

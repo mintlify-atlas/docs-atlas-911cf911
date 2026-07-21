@@ -1,7 +1,7 @@
 ---
-title: "Value Objects and Domain Primitives — ts-mongo-criteria API"
+title: "Value Objects and DDD Primitives — ts-mongo-criteria API"
 sidebarTitle: "Value Objects"
-description: "ValueObject, StringValueObject, EnumValueObject, AggregateRoot, and InvalidArgumentError are the DDD building blocks exported by ts-mongo-criteria for domain modeling."
+description: "Domain-Driven Design primitives shipped with ts-mongo-criteria: ValueObject, StringValueObject, EnumValueObject, AggregateRoot, and InvalidArgumentError."
 ---
 
 The `@abejarano/ts-mongodb-criteria` library ships a set of **Domain-Driven Design (DDD) primitives** that go hand-in-hand with its MongoDB query builder. These classes give you a type-safe foundation for modeling your domain: wrap every scalar field in a `ValueObject`, define bounded enumerations with `EnumValueObject`, anchor your aggregate roots with `AggregateRoot`, and catch validation failures through `InvalidArgumentError`. All primitives are tree-shakeable and have zero runtime dependencies beyond the Node.js standard library.

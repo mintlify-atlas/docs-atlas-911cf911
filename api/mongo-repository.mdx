@@ -1,7 +1,7 @@
 ---
 title: "MongoRepository — ts-mongo-criteria API Reference"
 sidebarTitle: "MongoRepository"
-description: "MongoRepository is the abstract base class providing one, many, list, upsert, and delete operations. Extend it with collectionName() and ensureIndexes() to create a typed repository."
+description: "Abstract base class for typed MongoDB repositories. Implement collectionName() and ensureIndexes() to get one, many, list, upsert, and delete built-in."
 ---
 
 `MongoRepository<T>` is the abstract base class at the heart of `@abejarano/ts-mongodb-criteria`. It wires together `MongoCriteriaConverter`, `MongoClientFactory`, and `MongoTransaction` so that every concrete repository you write automatically gets paginated listing, criteria-based filtering, upsert-by-ID persistence, and optional transactional support with zero boilerplate.

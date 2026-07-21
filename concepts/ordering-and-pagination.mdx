@@ -1,7 +1,7 @@
 ---
 title: "Sorting and Paginating Results with ts-mongo-criteria"
 sidebarTitle: "Ordering & Pagination"
-description: "Use Order.asc(), Order.desc(), and Order.none() to sort results, and pass limit and page to Criteria for automatic skip calculation and Paginate<T> responses."
+description: "Sort with Order.asc(), Order.desc(), or Order.none(), and pass limit plus a page number to Criteria for automatic skip calculation and Paginate<T> results."
 ---
 
 `ts-mongo-criteria` handles sorting and pagination as first-class concerns inside the `Criteria` object. You describe *how* to order results using the `Order` value object, and you describe *how many* results to return — and from which page — through the `limit` and `offset` parameters on `Criteria`. The `MongoCriteriaConverter` translates all of this into the `sort`, `skip`, and `limit` fields that MongoDB expects, and `MongoRepository.list()` wraps the results in the typed `Paginate<T>` response.
@@ -103,7 +103,6 @@ skip = (page - 1) * limit
 | 10 | 2 | 10 |
 | 10 | 3 | 20 |
 | 25 | 4 | 75 |
-| 10 | 0 | 0 (guard: page ≤ 0 → no skip) |
 
 ```typescript
 import { Criteria, Filters, Order } from "@abejarano/ts-mongodb-criteria"

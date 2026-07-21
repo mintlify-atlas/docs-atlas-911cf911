@@ -1,5 +1,5 @@
 ---
-title: "Run MongoDB Schema Migrations with ts-mongo CLI"
+title: "Run MongoDB Schema Migrations with the ts-mongo CLI"
 sidebarTitle: "DB Migrations"
 description: "Use the ts-mongo CLI and built-in migrate-mongo integration to create, run, and roll back MongoDB schema migrations alongside your application code."
 ---
@@ -71,7 +71,7 @@ module.exports = config;
 ```
 
 <Note>
-  Running `ts-mongo migrate:init` generates an **ESM-compatible** config automatically when your `package.json` contains `"type": "module"`. The generated file will use `export default` syntax and set `migrationFileExtension` to `.mjs` so that `migrate-mongo` can load migration files without transpilation.
+  When your `package.json` contains `"type": "module"`, running `ts-mongo migrate:init` automatically appends the `-m esm` flag to the underlying `migrate-mongo init` call. This tells `migrate-mongo` to generate an ESM-compatible config. Refer to the [migrate-mongo documentation](https://www.npmjs.com/package/migrate-mongo) for the exact generated output.
 </Note>
 
 ## Commands reference
@@ -232,8 +232,8 @@ module.exports = {
 
 <Warning>
   Running `ts-mongo migrate:init` in a project where `package.json` sets
-  `"type": "module"` generates an ESM-compatible config automatically — the
-  output file uses `export default` instead of `module.exports`. If you
-  hand-edit the config file after the fact, make sure the module format matches
-  what Node.js expects for `.js` files in your project.
+  `"type": "module"` passes `-m esm` to `migrate-mongo init` automatically,
+  producing an ESM-compatible config. If you hand-edit the config file after
+  the fact, make sure the module format matches what Node.js expects for `.js`
+  files in your project.
 </Warning>

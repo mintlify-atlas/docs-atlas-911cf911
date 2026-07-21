@@ -1,5 +1,5 @@
 ---
-title: "Order, OrderBy, and OrderType — ts-mongo-criteria API Reference"
+title: "Order and OrderType — ts-mongo-criteria API Reference"
 sidebarTitle: "Order"
 description: "Order controls query sort direction. Use Order.asc(), Order.desc(), or Order.fromValues() to build sort specifications consumed by MongoRepository."
 ---
@@ -74,8 +74,9 @@ console.log(criteria.order.orderType.isNone());  // true
 
 Builds an `Order` from optional runtime strings. This is the recommended factory when the sort field and direction come from user input (e.g. API query parameters). Both parameters are optional:
 
-- When both are provided, `OrderType.fromValue()` parses the direction string (`"asc"`, `"desc"`, `"none"`).
-- When either is omitted, `Order.none()` is returned.
+- When `orderBy` is falsy or omitted, `Order.none()` is returned regardless of `orderType`.
+- When `orderBy` is provided and `orderType` is omitted, the direction defaults to `"asc"`.
+- When both are provided, `OrderType.fromValue()` parses the direction string (`"asc"`, `"desc"`, or `"none"`).
 
 ```typescript
 import { Order } from "@abejarano/ts-mongodb-criteria";

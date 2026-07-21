@@ -1,7 +1,7 @@
 ---
 title: "MongoClientFactory — ts-mongo-criteria API Reference"
 sidebarTitle: "ClientFactory"
-description: "MongoClientFactory manages a singleton MongoClient connection using the MONGO_URI environment variable, with createClient() and closeClient() lifecycle methods."
+description: "Singleton MongoClient manager for ts-mongo-criteria. Reads MONGO_URI, caches the connection via createClient(), and releases it with closeClient()."
 ---
 
 `MongoClientFactory` is the connection manager for `@abejarano/ts-mongodb-criteria`. It maintains a single `MongoClient` instance for the lifetime of the Node.js process, reads the connection string from the `MONGO_URI` environment variable, and exposes two static lifecycle methods: `createClient()` to get-or-create the connection, and `closeClient()` to tear it down gracefully.

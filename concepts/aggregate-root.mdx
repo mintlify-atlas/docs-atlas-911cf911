@@ -1,7 +1,7 @@
 ---
 title: "AggregateRoot and Value Objects in ts-mongo-criteria"
 sidebarTitle: "Aggregate Root"
-description: "AggregateRoot is the base class for domain entities in ts-mongo-criteria. Implement getId(), toPrimitives(), and fromPrimitives() to integrate with MongoRepository."
+description: "Extend AggregateRoot for every entity you persist via MongoRepository. Override getId(), toPrimitives(), and fromPrimitives() to complete the integration."
 ---
 
 `ts-mongo-criteria` is built on a lightweight Domain-Driven Design (DDD) foundation. At the centre of that foundation is the **Aggregate Root** — the single entry point into a cluster of related domain objects. Every entity you want to persist through `MongoRepository` must extend `AggregateRoot`. Alongside it, the library ships a small set of **Value Object** base classes (`ValueObject<T>`, `StringValueObject`, `EnumValueObject<T>`) that let you model typed, self-validating domain values rather than raw primitives.
@@ -163,6 +163,7 @@ This utility type captures a *class constructor shape* — specifically, the sta
 
 ```typescript
 import { MongoRepository } from "@abejarano/ts-mongodb-criteria"
+import { Collection } from "mongodb"
 import { User } from "./User"
 
 class UserRepository extends MongoRepository<User> {
@@ -170,8 +171,12 @@ class UserRepository extends MongoRepository<User> {
     super(User)   // ← AggregateRootClass<User>: User.fromPrimitives will be called
   }
 
-  protected collectionName(): string {
+  collectionName(): string {
     return "users"
+  }
+
+  protected async ensureIndexes(collection: Collection): Promise<void> {
+    await collection.createIndex({ email: 1 }, { unique: true })
   }
 }
 ```
@@ -206,7 +211,7 @@ export interface IRepository<T extends AggregateRoot> {
 | `one(filter)` | Fetch the first document matching a raw MongoDB filter. Returns `T` or `null`. |
 | `list<D>(criteria, fieldsToExclude?)` | Translate a `Criteria` instance into a MongoDB query, run it, and return a `Paginate<D>` with total count and current page results. |
 | `upsert(entity)` | Insert or update a document whose `_id` matches `entity.getId()`. Calls `entity.toPrimitives()` internally. |
-| `delete(filter, options?)` | Delete documents matching a raw MongoDB filter. Pass `{ deleteOne: true }` in options for a single-document delete. |
+| `delete(filter, options?)` | Delete all documents matching a raw MongoDB filter. `options` accepts any standard MongoDB `DeleteOptions` (e.g. `collation`, `hint`). |
 
 All methods accept an optional `MongoTransaction` for session-scoped operations.
 
